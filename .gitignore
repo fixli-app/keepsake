@@ -6,3 +6,5 @@ web/dist/
 local.properties
 *.jks
 *.keystore
+*.p12
+*.pfx

@@ -71,10 +71,10 @@ function FlowerIllustration({ className = "" }) {
 
 function DownloadButton({ light = false }) {
   return (
-    <span className={`button button--download button--pending${light ? " button--light" : ""}`} role="status">
-      <Icon name="lock" size={18} />
-      <span>Signed Android release coming soon</span>
-    </span>
+    <a className={`button button--download${light ? " button--light" : ""}`} href="/Keepsake.apk" download>
+      <Icon name="download" size={18} />
+      <span>Download for Android</span>
+    </a>
   );
 }
 
@@ -137,9 +137,9 @@ function App() {
             <a href="#how-it-works">How it works</a>
             <a href="#privacy">Privacy</a>
           </nav>
-          <span className="header-download header-download--pending" role="status">
-            <Icon name="lock" size={15} /><span>Release pending</span>
-          </span>
+          <a className="header-download" href="/Keepsake.apk" download>
+            <span>Download</span><Icon name="arrow" size={16} />
+          </a>
         </div>
       </header>
 
@@ -154,7 +154,7 @@ function App() {
                 <DownloadButton />
                 <a className="text-link" href="#how-it-works">Explore the app <Icon name="arrow" size={16} /></a>
               </div>
-              <div className="hero__footnote"><span>Android 8.0 and up</span><span className="footnote-divider" /> Signed release in preparation</div>
+              <div className="hero__footnote"><span>Android 8.0 and up</span><span className="footnote-divider" /> Free to download</div>
             </div>
             <div className="hero__visual">
               <div className="hero__orbit hero__orbit--one" />
@@ -207,7 +207,7 @@ function App() {
               <h2>Make room for<br />what matters.</h2>
               <p>Install Keepsake on your Android phone and create your first private post.</p>
               <DownloadButton light />
-              <span className="download-panel__fineprint">A signed APK will be available after publisher signing is configured.</span>
+              <span className="download-panel__fineprint">Android 8.0 or later · APK download · Version 1.0.0</span>
             </div>
             <div className="download-panel__monogram" aria-hidden="true">K</div>
           </div>

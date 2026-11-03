@@ -29,7 +29,6 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .site-header nav a:hover, .site-footer a:hover { color: #c5f36b; }
 .header-download { display: inline-flex; align-items: center; gap: 11px; padding: 11px 15px; border: 1px solid #474941; border-radius: 7px; font-size: 12px; font-weight: 600; transition: background .18s ease, border .18s ease; }
 .header-download:hover { background: #272a22; border-color: #c5f36b; }
-.header-download--pending { color: #c1c2b9; cursor: default; }
 
 .hero { position: relative; overflow: hidden; background: #171914; color: #f8f8f4; }
 .hero__grid { min-height: 660px; display: grid; grid-template-columns: 1fr 1fr; align-items: center; }
@@ -320,8 +319,3 @@ h1, h2, h3, p { margin-top: 0; }
   0%, 100% { transform: rotate(12deg) translateY(0); }
   50% { transform: rotate(15deg) translateY(-5px); }
 }
-
-.button.button--pending { cursor: default; }
-.button.button--pending:hover { transform: none; background: #f0a08e; }
-.button.button--light.button--pending:hover { background: #405646; }
-.header-download--pending:hover { border-color: #474941; background: transparent; }
