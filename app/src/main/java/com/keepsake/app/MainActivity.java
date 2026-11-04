@@ -1467,6 +1467,34 @@ public final class MainActivity extends Activity {
         LinearLayout viewer = new LinearLayout(this);
         viewer.setOrientation(LinearLayout.VERTICAL);
         viewer.setBackgroundColor(color("#FBF8F3"));
+
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setPadding(dp(12), dp(4), dp(12), dp(4));
+        toolbar.setBackgroundColor(color("#FBF8F3"));
+        TextView close = label("CLOSE", 11, "#FBF8F3", true);
+        close.setGravity(Gravity.CENTER);
+        close.setBackground(background("#354A3C", 12));
+        close.setContentDescription("Close photo");
+        close.setOnClickListener(view -> dialog.dismiss());
+        toolbar.addView(close, new LinearLayout.LayoutParams(dp(72), dp(44)));
+        LinearLayout title = new LinearLayout(this);
+        title.setOrientation(LinearLayout.VERTICAL);
+        title.setPadding(dp(10), 0, dp(6), 0);
+        title.addView(label("Keepsake", 14, "#2E3B32", true));
+        state.dateLabel = label(formatDate(post.createdAt), 10, "#77736B", false);
+        title.addView(state.dateLabel, marginTop(2));
+        toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView more = label("MORE", 11, "#FBF8F3", true);
+        more.setGravity(Gravity.CENTER);
+        more.setBackground(background("#354A3C", 12));
+        more.setContentDescription("More photo actions");
+        more.setOnClickListener(view -> showPostActions(state.currentPost(), () -> {
+            dialog.dismiss();
+            refreshCurrentScreen();
+        }));
+        toolbar.addView(more, new LinearLayout.LayoutParams(dp(72), dp(44)));
+        viewer.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(54)));
         viewer.setOnApplyWindowInsetsListener((view, insets) -> {
             int topInset;
             int bottomInset;
@@ -1479,31 +1507,19 @@ public final class MainActivity extends Activity {
                 topInset = insets.getSystemWindowInsetTop();
                 bottomInset = insets.getSystemWindowInsetBottom();
             }
-            viewer.setPadding(0, topInset, 0, bottomInset);
+            int safeTopInset = Math.max(topInset, dp(24));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    && insets.getDisplayCutout() != null) {
+                safeTopInset = Math.max(safeTopInset,
+                        insets.getDisplayCutout().getSafeInsetTop());
+            }
+            LinearLayout.LayoutParams toolbarParams =
+                    (LinearLayout.LayoutParams) toolbar.getLayoutParams();
+            toolbarParams.topMargin = safeTopInset;
+            toolbar.setLayoutParams(toolbarParams);
+            viewer.setPadding(0, 0, 0, bottomInset);
             return insets;
         });
-
-        LinearLayout toolbar = new LinearLayout(this);
-        toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.setPadding(dp(16), 0, dp(16), 0);
-        TextView close = label("CLOSE", 10, "#354A3C", true);
-        close.setOnClickListener(view -> dialog.dismiss());
-        toolbar.addView(close, new LinearLayout.LayoutParams(dp(54), dp(48)));
-        LinearLayout title = new LinearLayout(this);
-        title.setOrientation(LinearLayout.VERTICAL);
-        title.addView(label("Keepsake", 14, "#2E3B32", true));
-        state.dateLabel = label(formatDate(post.createdAt), 10, "#77736B", false);
-        title.addView(state.dateLabel, marginTop(2));
-        toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView more = label("MORE", 10, "#52634C", true);
-        more.setGravity(Gravity.CENTER);
-        more.setPadding(dp(8), dp(10), 0, dp(10));
-        more.setOnClickListener(view -> showPostActions(state.currentPost(), () -> {
-            dialog.dismiss();
-            refreshCurrentScreen();
-        }));
-        toolbar.addView(more);
-        viewer.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(54)));
 
         PhotoPreviewImageView image = new PhotoPreviewImageView(this, state,
                 () -> showExpandedPhoto(state));
@@ -1611,13 +1627,17 @@ public final class MainActivity extends Activity {
 
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.setPadding(dp(18), 0, dp(18), 0);
+        toolbar.setPadding(dp(12), dp(4), dp(12), dp(4));
         toolbar.setBackgroundColor(color("#AA20251F"));
-        TextView close = label("CLOSE", 10, "#FBF8F3", true);
+        TextView close = label("CLOSE", 11, "#354A3C", true);
+        close.setGravity(Gravity.CENTER);
+        close.setBackground(background("#FBF8F3", 12));
+        close.setContentDescription("Close full-screen photo");
         close.setOnClickListener(view -> dialog.dismiss());
-        toolbar.addView(close, new LinearLayout.LayoutParams(dp(60), dp(52)));
+        toolbar.addView(close, new LinearLayout.LayoutParams(dp(76), dp(44)));
         state.expandedDateLabel = label(formatDate(state.currentPost().createdAt),
                 11, "#FBF8F3", true);
+        state.expandedDateLabel.setPadding(dp(12), 0, dp(8), 0);
         toolbar.addView(state.expandedDateLabel, new LinearLayout.LayoutParams(0, -2, 1));
         state.expandedCountLabel = label(photoPositionText(state), 10, "#F3E9E3", false);
         toolbar.addView(state.expandedCountLabel);
