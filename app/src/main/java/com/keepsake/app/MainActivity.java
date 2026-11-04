@@ -11,8 +11,10 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaMetadataRetriever;
@@ -24,9 +26,13 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.webkit.MimeTypeMap;
 import android.view.Gravity;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.ScaleGestureDetector;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 import android.widget.EditText;
@@ -135,6 +141,12 @@ public final class MainActivity extends Activity {
         page.setBackgroundColor(Color.TRANSPARENT);
         getWindow().setStatusBarColor(color(COLOR_BLUSH));
         getWindow().setNavigationBarColor(color(COLOR_BLUSH));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            getWindow().setDecorFitsSystemWindows(false);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            getWindow().setNavigationBarContrastEnforced(false);
+        }
 
         scrollContainer = new ScrollView(this);
         scrollContainer.setFillViewport(true);
@@ -148,8 +160,16 @@ public final class MainActivity extends Activity {
         page.addView(navigation);
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
         page.setOnApplyWindowInsetsListener((view, insets) -> {
-            int topInset = insets.getSystemWindowInsetTop();
-            int bottomInset = insets.getSystemWindowInsetBottom();
+            int topInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
+                topInset = systemBars.top;
+                bottomInset = systemBars.bottom;
+            } else {
+                topInset = insets.getSystemWindowInsetTop();
+                bottomInset = insets.getSystemWindowInsetBottom();
+            }
             page.setPadding(0, topInset, 0, 0);
             navigation.setPadding(0, 0, 0, bottomInset);
             ViewGroup.LayoutParams params = navigation.getLayoutParams();
@@ -969,31 +989,7 @@ public final class MainActivity extends Activity {
         }
         feed.removeAllViews();
         List<PostStore.Post> allPosts = store.getPosts();
-        List<PostStore.Post> posts = new ArrayList<>();
-        String query = searchField == null
-                ? "" : searchField.getText().toString().trim().toLowerCase(Locale.ENGLISH);
-        for (PostStore.Post post : allPosts) {
-            if (albumFilterId >= 0 && post.albumId != albumFilterId
-                    || albumFilterId == -2 && post.albumId >= 0
-                    || dateFilter >= 0 && !isSameDay(post.createdAt, dateFilter)
-                    || !query.isEmpty() && !matchesQuery(post, query)) {
-                continue;
-            }
-            posts.add(post);
-        }
-        Comparator<PostStore.Post> comparator;
-        if (sortOrder == 1) {
-            comparator = (first, second) -> Long.compare(first.createdAt, second.createdAt);
-        } else if (sortOrder == 2 || sortOrder == 3) {
-            comparator = (first, second) -> postSortName(first).compareToIgnoreCase(postSortName(second));
-            if (sortOrder == 3) {
-                comparator = comparator.reversed();
-            }
-        } else {
-            comparator = (first, second) -> Long.compare(second.createdAt, first.createdAt);
-        }
-        Collections.sort(posts, comparator);
-
+        List<PostStore.Post> posts = getVisiblePosts(allPosts);
         if (posts.isEmpty()) {
             LinearLayout empty = new LinearLayout(this);
             empty.setOrientation(LinearLayout.VERTICAL);
@@ -1037,6 +1033,34 @@ public final class MainActivity extends Activity {
                 row.addView(new View(this), new LinearLayout.LayoutParams(0, dp(tileSizeDp), 1));
             }
         }
+    }
+
+    private List<PostStore.Post> getVisiblePosts(List<PostStore.Post> allPosts) {
+        List<PostStore.Post> posts = new ArrayList<>();
+        String query = searchField == null
+                ? "" : searchField.getText().toString().trim().toLowerCase(Locale.ENGLISH);
+        for (PostStore.Post post : allPosts) {
+            if (albumFilterId >= 0 && post.albumId != albumFilterId
+                    || albumFilterId == -2 && post.albumId >= 0
+                    || dateFilter >= 0 && !isSameDay(post.createdAt, dateFilter)
+                    || !query.isEmpty() && !matchesQuery(post, query)) {
+                continue;
+            }
+            posts.add(post);
+        }
+        Comparator<PostStore.Post> comparator;
+        if (sortOrder == 1) {
+            comparator = (first, second) -> Long.compare(first.createdAt, second.createdAt);
+        } else if (sortOrder == 2 || sortOrder == 3) {
+            comparator = (first, second) -> postSortName(first).compareToIgnoreCase(postSortName(second));
+            if (sortOrder == 3) {
+                comparator = comparator.reversed();
+            }
+        } else {
+            comparator = (first, second) -> Long.compare(second.createdAt, first.createdAt);
+        }
+        Collections.sort(posts, comparator);
+        return posts;
     }
 
     private String postSortName(PostStore.Post post) {
@@ -1424,26 +1448,39 @@ public final class MainActivity extends Activity {
     }
 
     private void showPhotoViewer(PostStore.Post post) {
-        File file = new File(getFilesDir(), "media/" + post.fileName);
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = 1;
-        while (Math.max(bounds.outWidth / (options.inSampleSize * 2),
-                bounds.outHeight / (options.inSampleSize * 2)) >= 1600) {
-            options.inSampleSize *= 2;
+        List<PostStore.Post> photos = new ArrayList<>();
+        int selectedIndex = 0;
+        for (PostStore.Post candidate : getVisiblePosts(store.getPosts())) {
+            if (!"image".equals(candidate.mediaType)) {
+                continue;
+            }
+            if (candidate.id == post.id) {
+                selectedIndex = photos.size();
+            }
+            photos.add(candidate);
         }
-        Bitmap photo = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
-        if (photo == null) {
-            showError("Could not open this photo.");
-            return;
+        if (photos.isEmpty()) {
+            photos.add(post);
         }
-
+        PhotoViewerState state = new PhotoViewerState(photos, selectedIndex);
         Dialog dialog = new Dialog(this, android.R.style.Theme_Material_Light_NoActionBar_Fullscreen);
         LinearLayout viewer = new LinearLayout(this);
         viewer.setOrientation(LinearLayout.VERTICAL);
         viewer.setBackgroundColor(color("#FBF8F3"));
+        viewer.setOnApplyWindowInsetsListener((view, insets) -> {
+            int topInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
+                topInset = systemBars.top;
+                bottomInset = systemBars.bottom;
+            } else {
+                topInset = insets.getSystemWindowInsetTop();
+                bottomInset = insets.getSystemWindowInsetBottom();
+            }
+            viewer.setPadding(0, topInset, 0, bottomInset);
+            return insets;
+        });
 
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
@@ -1454,33 +1491,37 @@ public final class MainActivity extends Activity {
         LinearLayout title = new LinearLayout(this);
         title.setOrientation(LinearLayout.VERTICAL);
         title.addView(label("Keepsake", 14, "#2E3B32", true));
-        title.addView(label(formatDate(post.createdAt), 10, "#77736B", false), marginTop(2));
+        state.dateLabel = label(formatDate(post.createdAt), 10, "#77736B", false);
+        title.addView(state.dateLabel, marginTop(2));
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         TextView more = label("MORE", 10, "#52634C", true);
         more.setGravity(Gravity.CENTER);
         more.setPadding(dp(8), dp(10), 0, dp(10));
-        more.setOnClickListener(view -> showPostActions(post, () -> {
+        more.setOnClickListener(view -> showPostActions(state.currentPost(), () -> {
             dialog.dismiss();
             refreshCurrentScreen();
         }));
         toolbar.addView(more);
         viewer.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(54)));
 
-        ImageView image = new ImageView(this);
-        image.setImageBitmap(photo);
+        PhotoPreviewImageView image = new PhotoPreviewImageView(this, state,
+                () -> showExpandedPhoto(state));
         image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        image.setContentDescription("Full-size photo");
+        image.setContentDescription("Photo. Tap to zoom, or swipe to browse photos.");
         image.setBackgroundColor(color("#2E3B32"));
         int imageHeight = Math.min(dp(420), Math.round(getResources().getDisplayMetrics().heightPixels * .43f));
         viewer.addView(image, new LinearLayout.LayoutParams(-1, imageHeight));
+        state.previewImage = image;
 
         LinearLayout details = new LinearLayout(this);
         details.setOrientation(LinearLayout.VERTICAL);
         details.setPadding(dp(18), dp(14), dp(18), dp(18));
+        state.details = details;
         ScrollView detailsScroll = new ScrollView(this);
         detailsScroll.setFillViewport(false);
         detailsScroll.addView(details);
         viewer.addView(detailsScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        state.detailsScroll = detailsScroll;
 
         EditText commentInput = new EditText(this);
         commentInput.setSingleLine(true);
@@ -1505,9 +1546,9 @@ public final class MainActivity extends Activity {
                 return;
             }
             try {
-                store.addComment(post.id, text);
+                store.addComment(state.currentPost().id, text);
                 commentInput.setText("");
-                populatePhotoDetails(details, post, dialog);
+                state.refreshDetails();
                 renderFeed();
             } catch (Exception exception) {
                 showError("Could not save your comment.");
@@ -1515,16 +1556,137 @@ public final class MainActivity extends Activity {
         });
         viewer.addView(composer, new LinearLayout.LayoutParams(-1, -2));
 
-        populatePhotoDetails(details, post, dialog);
+        state.commentInput = commentInput;
+        state.refreshDetails();
         dialog.setContentView(viewer);
-        dialog.show();
         if (dialog.getWindow() != null) {
             dialog.getWindow().setLayout(-1, -1);
             dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setStatusBarColor(color("#FBF8F3"));
+            dialog.getWindow().setNavigationBarColor(color("#FBF8F3"));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                dialog.getWindow().setDecorFitsSystemWindows(false);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                dialog.getWindow().setNavigationBarContrastEnforced(false);
+            }
+        }
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(-1, -1);
         }
     }
 
-    private void populatePhotoDetails(LinearLayout details, PostStore.Post post, Dialog dialog) {
+    private Bitmap loadPhoto(PostStore.Post post) {
+        File file = new File(getFilesDir(), "media/" + post.fileName);
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = 1;
+        while (Math.max(bounds.outWidth / (options.inSampleSize * 2),
+                bounds.outHeight / (options.inSampleSize * 2)) >= 1600) {
+            options.inSampleSize *= 2;
+        }
+        return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+    }
+
+    private void showExpandedPhoto(PhotoViewerState state) {
+        if (state.photo == null) {
+            showError("Could not open this photo.");
+            return;
+        }
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Material_Light_NoActionBar_Fullscreen);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(color("#20251F"));
+
+        ZoomablePhotoView image = new ZoomablePhotoView(this,
+                delta -> state.movePhoto(delta));
+        image.setContentDescription("Zoomable photo. Pinch to zoom and swipe to browse.");
+        image.setImageBitmap(state.photo);
+        root.addView(image, new FrameLayout.LayoutParams(-1, -1));
+        state.expandedImage = image;
+
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setPadding(dp(18), 0, dp(18), 0);
+        toolbar.setBackgroundColor(color("#AA20251F"));
+        TextView close = label("CLOSE", 10, "#FBF8F3", true);
+        close.setOnClickListener(view -> dialog.dismiss());
+        toolbar.addView(close, new LinearLayout.LayoutParams(dp(60), dp(52)));
+        state.expandedDateLabel = label(formatDate(state.currentPost().createdAt),
+                11, "#FBF8F3", true);
+        toolbar.addView(state.expandedDateLabel, new LinearLayout.LayoutParams(0, -2, 1));
+        state.expandedCountLabel = label(photoPositionText(state), 10, "#F3E9E3", false);
+        toolbar.addView(state.expandedCountLabel);
+        FrameLayout.LayoutParams toolbarParams = new FrameLayout.LayoutParams(
+                -1, dp(56), Gravity.TOP);
+        root.addView(toolbar, toolbarParams);
+
+        TextView hint = label("Pinch to zoom  |  Swipe to browse", 10, "#F3E9E3", false);
+        hint.setGravity(Gravity.CENTER);
+        hint.setBackgroundColor(color("#AA20251F"));
+        FrameLayout.LayoutParams hintParams = new FrameLayout.LayoutParams(
+                -1, dp(42), Gravity.BOTTOM);
+        root.addView(hint, hintParams);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int topInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
+                topInset = systemBars.top;
+                bottomInset = systemBars.bottom;
+            } else {
+                topInset = insets.getSystemWindowInsetTop();
+                bottomInset = insets.getSystemWindowInsetBottom();
+            }
+            FrameLayout.LayoutParams updatedToolbarParams =
+                    (FrameLayout.LayoutParams) toolbar.getLayoutParams();
+            int safeTopInset = Math.max(topInset, dp(24));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    && insets.getDisplayCutout() != null) {
+                safeTopInset = Math.max(safeTopInset,
+                        insets.getDisplayCutout().getSafeInsetTop());
+            }
+            updatedToolbarParams.topMargin = safeTopInset;
+            toolbar.setLayoutParams(updatedToolbarParams);
+            FrameLayout.LayoutParams updatedHintParams =
+                    (FrameLayout.LayoutParams) hint.getLayoutParams();
+            updatedHintParams.bottomMargin = bottomInset;
+            hint.setLayoutParams(updatedHintParams);
+            return insets;
+        });
+
+        dialog.setContentView(root);
+        dialog.setOnDismissListener(ignored -> {
+            state.expandedImage = null;
+            state.expandedDateLabel = null;
+            state.expandedCountLabel = null;
+        });
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setStatusBarColor(color("#20251F"));
+            dialog.getWindow().setNavigationBarColor(color("#20251F"));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                dialog.getWindow().setDecorFitsSystemWindows(false);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                dialog.getWindow().setNavigationBarContrastEnforced(false);
+            }
+            dialog.getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        }
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(-1, -1);
+        }
+    }
+
+    private String photoPositionText(PhotoViewerState state) {
+        return (state.index + 1) + " / " + state.photos.size();
+    }
+
+    private void populatePhotoDetails(LinearLayout details, PostStore.Post post,
+                                     Runnable refreshDetails) {
         details.removeAllViews();
         details.addView(label("YOUR MEMORY", 9, "#8D625C", true));
         if (!post.caption.isEmpty()) {
@@ -1569,7 +1731,7 @@ public final class MainActivity extends Activity {
             row.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
             row.setPadding(0, dp(7), 0, dp(7));
             row.setOnClickListener(view -> showCommentActions(post, comment,
-                    () -> populatePhotoDetails(details, post, dialog)));
+                    refreshDetails));
             details.addView(row);
         }
     }
@@ -1813,6 +1975,313 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.bottomMargin = dp(dp);
         return params;
+    }
+
+    private final class PhotoViewerState {
+        private final List<PostStore.Post> photos;
+        private int index;
+        private ImageView previewImage;
+        private ZoomablePhotoView expandedImage;
+        private LinearLayout details;
+        private ScrollView detailsScroll;
+        private EditText commentInput;
+        private TextView dateLabel;
+        private TextView expandedDateLabel;
+        private TextView expandedCountLabel;
+        private Bitmap photo;
+
+        PhotoViewerState(List<PostStore.Post> photos, int index) {
+            this.photos = photos;
+            this.index = index;
+        }
+
+        PostStore.Post currentPost() {
+            return photos.get(index);
+        }
+
+        void movePhoto(int offset) {
+            int nextIndex = index + offset;
+            if (nextIndex < 0 || nextIndex >= photos.size()) {
+                return;
+            }
+            Bitmap nextPhoto = loadPhoto(photos.get(nextIndex));
+            if (nextPhoto == null) {
+                showError("Could not open this photo.");
+                return;
+            }
+            index = nextIndex;
+            photo = nextPhoto;
+            previewImage.setImageBitmap(photo);
+            dateLabel.setText(formatDate(currentPost().createdAt));
+            if (commentInput != null) {
+                commentInput.setText("");
+            }
+            refreshDetails();
+            if (expandedImage != null) {
+                expandedImage.setImageBitmap(photo);
+                expandedDateLabel.setText(formatDate(currentPost().createdAt));
+                expandedCountLabel.setText(photoPositionText(this));
+            }
+        }
+
+        void refreshDetails() {
+            if (photo == null) {
+                photo = loadPhoto(currentPost());
+            }
+            if (photo == null) {
+                showError("Could not open this photo.");
+                return;
+            }
+            if (previewImage != null) {
+                previewImage.setImageBitmap(photo);
+            }
+            if (details != null) {
+                populatePhotoDetails(details, currentPost(), this::refreshDetails);
+                detailsScroll.scrollTo(0, 0);
+            }
+        }
+    }
+
+    private interface PhotoSwipeListener {
+        void onSwipe(int offset);
+    }
+
+    private final class PhotoPreviewImageView extends ImageView {
+        private final GestureDetector gestureDetector;
+        private boolean swiped;
+
+        PhotoPreviewImageView(Context context, PhotoViewerState state, Runnable onTap) {
+            super(context);
+            setClickable(true);
+            setOnClickListener(view -> onTap.run());
+            gestureDetector = new GestureDetector(context,
+                    new GestureDetector.SimpleOnGestureListener() {
+                        @Override
+                        public boolean onDown(MotionEvent event) {
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onFling(MotionEvent first, MotionEvent last,
+                                               float velocityX, float velocityY) {
+                            float deltaX = last.getX() - first.getX();
+                            float deltaY = last.getY() - first.getY();
+                            if (Math.abs(deltaX) > dp(64)
+                                    && Math.abs(deltaX) > Math.abs(deltaY) * 1.2f) {
+                                swiped = true;
+                                state.movePhoto(deltaX < 0 ? 1 : -1);
+                                return true;
+                            }
+                            return false;
+                        }
+                    });
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                swiped = false;
+            }
+            gestureDetector.onTouchEvent(event);
+            if (event.getActionMasked() == MotionEvent.ACTION_UP && !swiped) {
+                performClick();
+            }
+            return true;
+        }
+
+        @Override
+        public boolean performClick() {
+            return super.performClick();
+        }
+    }
+
+    private final class ZoomablePhotoView extends ImageView {
+        private final Matrix imageMatrix = new Matrix();
+        private final RectF displayedImage = new RectF();
+        private final ScaleGestureDetector scaleDetector;
+        private final GestureDetector gestureDetector;
+        private final PhotoSwipeListener swipeListener;
+        private float zoomScale = 1f;
+        private float lastTouchX;
+        private float lastTouchY;
+        private boolean swiped;
+
+        ZoomablePhotoView(Context context, PhotoSwipeListener swipeListener) {
+            super(context);
+            this.swipeListener = swipeListener;
+            setScaleType(ScaleType.MATRIX);
+            scaleDetector = new ScaleGestureDetector(context,
+                    new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                        @Override
+                        public boolean onScale(ScaleGestureDetector detector) {
+                            float targetScale = Math.max(1f, Math.min(5f,
+                                    zoomScale * detector.getScaleFactor()));
+                            float factor = targetScale / zoomScale;
+                            imageMatrix.postScale(factor, factor,
+                                    detector.getFocusX(), detector.getFocusY());
+                            zoomScale = targetScale;
+                            constrainImage();
+                            setImageMatrix(imageMatrix);
+                            return true;
+                        }
+                    });
+            gestureDetector = new GestureDetector(context,
+                    new GestureDetector.SimpleOnGestureListener() {
+                        @Override
+                        public boolean onDown(MotionEvent event) {
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onSingleTapUp(MotionEvent event) {
+                            performClick();
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onDoubleTap(MotionEvent event) {
+                            toggleZoom(event.getX(), event.getY());
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onFling(MotionEvent first, MotionEvent last,
+                                               float velocityX, float velocityY) {
+                            float deltaX = last.getX() - first.getX();
+                            float deltaY = last.getY() - first.getY();
+                            if (zoomScale <= 1f && Math.abs(deltaX) > dp(64)
+                                    && Math.abs(deltaX) > Math.abs(deltaY) * 1.2f
+                                    && Math.abs(velocityX) > dp(250)) {
+                                swiped = true;
+                                swipeListener.onSwipe(deltaX < 0 ? 1 : -1);
+                                return true;
+                            }
+                            return false;
+                        }
+                    });
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            boolean handled = handleTouch(event);
+            if (event.getActionMasked() == MotionEvent.ACTION_UP
+                    && !swiped && !scaleDetector.isInProgress()) {
+                performClick();
+            }
+            return handled;
+        }
+
+        @Override
+        public void setImageBitmap(Bitmap bitmap) {
+            super.setImageBitmap(bitmap);
+            zoomScale = 1f;
+            post(this::resetImageMatrix);
+        }
+
+        @Override
+        protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+            super.onSizeChanged(width, height, oldWidth, oldHeight);
+            resetImageMatrix();
+        }
+
+        @Override
+        public boolean performClick() {
+            return super.performClick();
+        }
+
+        private boolean handleTouch(MotionEvent event) {
+            scaleDetector.onTouchEvent(event);
+            gestureDetector.onTouchEvent(event);
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    swiped = false;
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    if (zoomScale > 1f && event.getPointerCount() == 1
+                            && !scaleDetector.isInProgress()) {
+                        float deltaX = event.getX() - lastTouchX;
+                        float deltaY = event.getY() - lastTouchY;
+                        imageMatrix.postTranslate(deltaX, deltaY);
+                        constrainImage();
+                        setImageMatrix(imageMatrix);
+                    }
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    break;
+                default:
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
+                    break;
+            }
+            return true;
+        }
+
+        private void toggleZoom(float x, float y) {
+            if (zoomScale > 1f) {
+                zoomScale = 1f;
+                resetImageMatrix();
+                return;
+            }
+            zoomScale = 2.5f;
+            imageMatrix.postScale(zoomScale, zoomScale, x, y);
+            constrainImage();
+            setImageMatrix(imageMatrix);
+        }
+
+        private void resetImageMatrix() {
+            if (getDrawable() == null || getWidth() == 0 || getHeight() == 0) {
+                return;
+            }
+            float imageWidth = getDrawable().getIntrinsicWidth();
+            float imageHeight = getDrawable().getIntrinsicHeight();
+            if (imageWidth <= 0 || imageHeight <= 0) {
+                return;
+            }
+            float fitScale = Math.min(getWidth() / imageWidth, getHeight() / imageHeight);
+            float left = (getWidth() - imageWidth * fitScale) / 2f;
+            float top = (getHeight() - imageHeight * fitScale) / 2f;
+            imageMatrix.setScale(fitScale, fitScale);
+            imageMatrix.postTranslate(left, top);
+            zoomScale = 1f;
+            setImageMatrix(imageMatrix);
+        }
+
+        private void constrainImage() {
+            if (getDrawable() == null) {
+                return;
+            }
+            displayedImage.set(0, 0, getDrawable().getIntrinsicWidth(),
+                    getDrawable().getIntrinsicHeight());
+            imageMatrix.mapRect(displayedImage);
+
+            float deltaX;
+            if (displayedImage.width() <= getWidth()) {
+                deltaX = getWidth() / 2f - displayedImage.centerX();
+            } else if (displayedImage.left > 0) {
+                deltaX = -displayedImage.left;
+            } else if (displayedImage.right < getWidth()) {
+                deltaX = getWidth() - displayedImage.right;
+            } else {
+                deltaX = 0;
+            }
+
+            float deltaY;
+            if (displayedImage.height() <= getHeight()) {
+                deltaY = getHeight() / 2f - displayedImage.centerY();
+            } else if (displayedImage.top > 0) {
+                deltaY = -displayedImage.top;
+            } else if (displayedImage.bottom < getHeight()) {
+                deltaY = getHeight() - displayedImage.bottom;
+            } else {
+                deltaY = 0;
+            }
+            imageMatrix.postTranslate(deltaX, deltaY);
+        }
     }
 
     private final class NavigationIcon extends View {
