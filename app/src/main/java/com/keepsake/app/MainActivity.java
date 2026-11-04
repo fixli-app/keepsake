@@ -1472,8 +1472,9 @@ public final class MainActivity extends Activity {
             int bottomInset;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.graphics.Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
+                android.graphics.Insets imeInsets = insets.getInsets(WindowInsets.Type.ime());
                 topInset = systemBars.top;
-                bottomInset = systemBars.bottom;
+                bottomInset = Math.max(systemBars.bottom, imeInsets.bottom);
             } else {
                 topInset = insets.getSystemWindowInsetTop();
                 bottomInset = insets.getSystemWindowInsetBottom();
@@ -1574,6 +1575,7 @@ public final class MainActivity extends Activity {
         dialog.show();
         if (dialog.getWindow() != null) {
             dialog.getWindow().setLayout(-1, -1);
+            viewer.requestApplyInsets();
         }
     }
 
