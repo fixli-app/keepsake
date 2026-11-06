@@ -11,7 +11,7 @@ import java.util.List;
 
 final class PostStore extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "keepsake.db";
-    private static final int DATABASE_VERSION = 4;
+    private static final int DATABASE_VERSION = 5;
 
     PostStore(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -23,6 +23,7 @@ final class PostStore extends SQLiteOpenHelper {
         database.execSQL("CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT NOT NULL, media_type TEXT NOT NULL, caption TEXT NOT NULL, created_at INTEGER NOT NULL, album_id INTEGER REFERENCES albums(id) ON DELETE SET NULL, album_order INTEGER NOT NULL DEFAULT 0)");
         database.execSQL("CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, text TEXT NOT NULL, created_at INTEGER NOT NULL)");
         database.execSQL("CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
+        database.execSQL("CREATE TABLE reel_slides (reel_post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, position INTEGER NOT NULL, file_name TEXT NOT NULL, duration_seconds INTEGER NOT NULL, PRIMARY KEY(reel_post_id, position))");
     }
 
     @Override
@@ -37,6 +38,9 @@ final class PostStore extends SQLiteOpenHelper {
         }
         if (oldVersion < 4) {
             database.execSQL("ALTER TABLE posts ADD COLUMN album_order INTEGER NOT NULL DEFAULT 0");
+        }
+        if (oldVersion < 5) {
+            database.execSQL("CREATE TABLE reel_slides (reel_post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, position INTEGER NOT NULL, file_name TEXT NOT NULL, duration_seconds INTEGER NOT NULL, PRIMARY KEY(reel_post_id, position))");
         }
     }
 
@@ -61,6 +65,59 @@ final class PostStore extends SQLiteOpenHelper {
             values.put("album_order", albumOrder);
         }
         return getWritableDatabase().insertOrThrow("posts", null, values);
+    }
+
+    long addReelPost(String fileName, String caption, long albumId,
+                     List<String> slideFileNames, List<Integer> durationsSeconds) {
+        if (slideFileNames.size() < 2 || slideFileNames.size() != durationsSeconds.size()) {
+            throw new IllegalArgumentException("A Reel must contain at least two matching slides.");
+        }
+        SQLiteDatabase database = getWritableDatabase();
+        database.beginTransaction();
+        try {
+            ContentValues postValues = new ContentValues();
+            postValues.put("file_name", fileName);
+            postValues.put("media_type", "video");
+            postValues.put("caption", caption);
+            postValues.put("created_at", System.currentTimeMillis());
+            if (albumId >= 0) {
+                postValues.put("album_id", albumId);
+                postValues.put("album_order", getAlbumPostCount(albumId));
+            }
+            long postId = database.insertOrThrow("posts", null, postValues);
+            for (int i = 0; i < slideFileNames.size(); i++) {
+                ContentValues slideValues = new ContentValues();
+                slideValues.put("reel_post_id", postId);
+                slideValues.put("position", i);
+                slideValues.put("file_name", slideFileNames.get(i));
+                slideValues.put("duration_seconds", durationsSeconds.get(i));
+                database.insertOrThrow("reel_slides", null, slideValues);
+            }
+            database.setTransactionSuccessful();
+            return postId;
+        } finally {
+            database.endTransaction();
+        }
+    }
+
+    List<ReelSlide> getReelSlides(long postId) {
+        List<ReelSlide> slides = new ArrayList<>();
+        try (Cursor cursor = getReadableDatabase().query("reel_slides",
+                new String[]{"file_name", "duration_seconds"}, "reel_post_id = ?",
+                new String[]{Long.toString(postId)}, null, null, "position ASC")) {
+            while (cursor.moveToNext()) {
+                slides.add(new ReelSlide(cursor.getString(0), cursor.getInt(1)));
+            }
+        }
+        return slides;
+    }
+
+    boolean isReel(long postId) {
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT 1 FROM reel_slides WHERE reel_post_id = ? LIMIT 1",
+                new String[]{Long.toString(postId)})) {
+            return cursor.moveToFirst();
+        }
     }
 
     void addPhotosToAlbum(long albumId, List<String> fileNames) {
@@ -313,6 +370,16 @@ final class PostStore extends SQLiteOpenHelper {
             this.id = id;
             this.text = text;
             this.updatedAt = updatedAt;
+        }
+    }
+
+    static final class ReelSlide {
+        final String fileName;
+        final int durationSeconds;
+
+        ReelSlide(String fileName, int durationSeconds) {
+            this.fileName = fileName;
+            this.durationSeconds = durationSeconds;
         }
     }
 

@@ -1924,6 +1924,20 @@ public final class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), dp(12), dp(18), dp(12));
         root.setBackgroundColor(color(COLOR_BLUSH));
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int topInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
+                topInset = systemBars.top;
+                bottomInset = systemBars.bottom;
+            } else {
+                topInset = insets.getSystemWindowInsetTop();
+                bottomInset = insets.getSystemWindowInsetBottom();
+            }
+            root.setPadding(dp(18), topInset + dp(8), dp(18), bottomInset + dp(8));
+            return insets;
+        });
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
@@ -2124,6 +2138,13 @@ public final class MainActivity extends Activity {
             dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
             dialog.getWindow().setStatusBarColor(color(COLOR_BLUSH));
             dialog.getWindow().setNavigationBarColor(color(COLOR_BLUSH));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                dialog.getWindow().setDecorFitsSystemWindows(false);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                dialog.getWindow().setNavigationBarContrastEnforced(false);
+            }
+            root.requestApplyInsets();
         }
         refreshReelTimeline();
     }
@@ -2383,9 +2404,11 @@ public final class MainActivity extends Activity {
         File directory = new File(getFilesDir(), "media");
         File output = new File(directory, "reel_" + System.currentTimeMillis() + ".mp4");
         List<File> images = new ArrayList<>();
+        List<String> slideFileNames = new ArrayList<>();
         List<Integer> durations = new ArrayList<>();
         for (ReelSlide slide : reelSlides) {
             images.add(slide.file);
+            slideFileNames.add(slide.file.getName());
             durations.add(slide.durationSeconds);
         }
         File music = reelMusicFile;
@@ -2402,7 +2425,9 @@ public final class MainActivity extends Activity {
                     @Override
                     public void onCompleted() {
                         try {
-                            store.addPost(output.getName(), "video", text, albumId);
+                            store.addReelPost(output.getName(), text, albumId,
+                                    slideFileNames, durations);
+                            reelSlides.clear();
                             Toast.makeText(MainActivity.this, "Reel saved on your device.",
                                     Toast.LENGTH_SHORT).show();
                             if (reelDialog != null) {
@@ -2627,6 +2652,7 @@ public final class MainActivity extends Activity {
                 .setMessage("The saved photo or video, caption, and comments will be removed from this device.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Delete", (dialog, which) -> {
+                    List<PostStore.ReelSlide> reelSlides = store.getReelSlides(post.id);
                     File media = new File(getFilesDir(), "media/" + post.fileName);
                     if (media.exists() && !media.delete()) {
                         showError("Could not delete the saved media.");
@@ -2634,6 +2660,9 @@ public final class MainActivity extends Activity {
                     }
                     try {
                         store.deletePost(post.id);
+                        for (PostStore.ReelSlide slide : reelSlides) {
+                            new File(getFilesDir(), "media/" + slide.fileName).delete();
+                        }
                         onUpdated.run();
                     } catch (Exception exception) {
                         showError("Could not delete this memory. Please try again.");
@@ -3074,6 +3103,25 @@ public final class MainActivity extends Activity {
     }
 
     private void playVideo(PostStore.Post post) {
+        if (store.isReel(post.id)) {
+            String[] options = {"Play as video", "Swipe through photos"};
+            new AlertDialog.Builder(this)
+                    .setTitle("Open Reel")
+                    .setItems(options, (dialog, selected) -> {
+                        if (selected == 0) {
+                            playVideoFile(post);
+                        } else {
+                            showReelPhotoViewer(post);
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
+        playVideoFile(post);
+    }
+
+    private void playVideoFile(PostStore.Post post) {
         VideoView player = new VideoView(this);
         player.setLayoutParams(new ViewGroup.LayoutParams(-1, dp(320)));
         player.setVideoPath(new File(getFilesDir(), "media/" + post.fileName).getAbsolutePath());
@@ -3093,6 +3141,142 @@ public final class MainActivity extends Activity {
         });
         dialog.setOnDismissListener(ignored -> player.stopPlayback());
         dialog.show();
+    }
+
+    private void showReelPhotoViewer(PostStore.Post post) {
+        List<PostStore.ReelSlide> slides = store.getReelSlides(post.id);
+        if (slides.isEmpty()) {
+            showError("The Reel photos are not available.");
+            return;
+        }
+
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Material_Light_NoActionBar_Fullscreen);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(color("#20251F"));
+
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setPadding(dp(12), dp(6), dp(12), dp(6));
+        toolbar.setBackgroundColor(color("#20251F"));
+        TextView close = label("CLOSE", 10, "#F8E9E5", true);
+        close.setGravity(Gravity.CENTER);
+        close.setOnClickListener(view -> dialog.dismiss());
+        toolbar.addView(close, new LinearLayout.LayoutParams(dp(64), dp(42)));
+        TextView title = label("Reel photos", 14, "#F8E9E5", true);
+        title.setGravity(Gravity.CENTER);
+        toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView watchVideo = label("VIDEO", 10, "#F8E9E5", true);
+        watchVideo.setGravity(Gravity.CENTER);
+        watchVideo.setBackground(background("#354A3C", 10));
+        watchVideo.setContentDescription("Play Reel as a video");
+        watchVideo.setOnClickListener(view -> {
+            dialog.dismiss();
+            playVideoFile(post);
+        });
+        toolbar.addView(watchVideo, new LinearLayout.LayoutParams(dp(68), dp(40)));
+        root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(54)));
+
+        FrameLayout photoFrame = new FrameLayout(this);
+        photoFrame.setBackgroundColor(color("#151815"));
+        ImageView photo = new ImageView(this);
+        photo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        photoFrame.addView(photo, new FrameLayout.LayoutParams(-1, -1));
+        TextView counter = label("", 10, "#FFFFFF", true);
+        counter.setGravity(Gravity.CENTER);
+        counter.setPadding(dp(10), dp(6), dp(10), dp(6));
+        counter.setBackground(background("#AA20251F", 12));
+        FrameLayout.LayoutParams counterParams = new FrameLayout.LayoutParams(-2, -2,
+                Gravity.TOP | Gravity.END);
+        counterParams.setMargins(0, dp(12), dp(12), 0);
+        photoFrame.addView(counter, counterParams);
+        root.addView(photoFrame, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        int[] selectedIndex = {0};
+        Runnable update = () -> {
+            File source = new File(getFilesDir(), "media/" + slides.get(selectedIndex[0]).fileName);
+            photo.setImageBitmap(readPreview(source, "image"));
+            counter.setText((selectedIndex[0] + 1) + " / " + slides.size());
+        };
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setGravity(Gravity.CENTER);
+        controls.setPadding(dp(12), dp(10), dp(12), dp(16));
+        TextView previous = memoryActionButton("‹", view -> {
+            selectedIndex[0] = (selectedIndex[0] - 1 + slides.size()) % slides.size();
+            update.run();
+        });
+        controls.addView(previous, new LinearLayout.LayoutParams(dp(60), dp(42)));
+        TextView hint = label("Swipe to browse", 10, "#E2E4DE", false);
+        hint.setGravity(Gravity.CENTER);
+        controls.addView(hint, new LinearLayout.LayoutParams(0, dp(42), 1));
+        TextView next = memoryActionButton("›", view -> {
+            selectedIndex[0] = (selectedIndex[0] + 1) % slides.size();
+            update.run();
+        });
+        controls.addView(next, new LinearLayout.LayoutParams(dp(60), dp(42)));
+        root.addView(controls, new LinearLayout.LayoutParams(-1, -2));
+
+        GestureDetector gestureDetector = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public boolean onDown(MotionEvent event) {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onFling(MotionEvent first, MotionEvent last,
+                                           float velocityX, float velocityY) {
+                        float deltaX = last.getX() - first.getX();
+                        float deltaY = last.getY() - first.getY();
+                        if (Math.abs(deltaX) > dp(48) && Math.abs(deltaX) > Math.abs(deltaY)) {
+                            selectedIndex[0] = (selectedIndex[0] + (deltaX < 0 ? 1 : -1)
+                                    + slides.size()) % slides.size();
+                            update.run();
+                            return true;
+                        }
+                        return false;
+                    }
+                });
+        photoFrame.setOnTouchListener((view, event) -> gestureDetector.onTouchEvent(event));
+
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int topInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
+                topInset = systemBars.top;
+                bottomInset = systemBars.bottom;
+            } else {
+                topInset = insets.getSystemWindowInsetTop();
+                bottomInset = insets.getSystemWindowInsetBottom();
+            }
+            LinearLayout.LayoutParams toolbarParams =
+                    (LinearLayout.LayoutParams) toolbar.getLayoutParams();
+            toolbarParams.topMargin = topInset;
+            toolbar.setLayoutParams(toolbarParams);
+            LinearLayout.LayoutParams controlParams =
+                    (LinearLayout.LayoutParams) controls.getLayoutParams();
+            controlParams.bottomMargin = bottomInset;
+            controls.setLayoutParams(controlParams);
+            return insets;
+        });
+
+        dialog.setContentView(root);
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(-1, -1);
+            dialog.getWindow().setStatusBarColor(color("#20251F"));
+            dialog.getWindow().setNavigationBarColor(color("#20251F"));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                dialog.getWindow().setDecorFitsSystemWindows(false);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                dialog.getWindow().setNavigationBarContrastEnforced(false);
+            }
+            root.requestApplyInsets();
+        }
+        update.run();
     }
 
     private Bitmap readPreview(File file, String mediaType) {
