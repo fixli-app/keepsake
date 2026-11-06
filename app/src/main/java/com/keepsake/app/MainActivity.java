@@ -298,76 +298,134 @@ public final class MainActivity extends Activity {
     private View buildHomeNotes() {
         LinearLayout section = new LinearLayout(this);
         section.setOrientation(LinearLayout.VERTICAL);
-        section.addView(label("Got something on your mind? Write it down", 16, "#2E3B32", true));
-        section.addView(memoryActionButton("Add note", view -> showNoteDialog(null)), marginTop(8));
+        section.addView(label("Got something on your mind?", 16, "#2E3B32", true));
+        section.addView(label("Write down an idea, a plan, or a passing thought.",
+            11, "#77736B", false), marginTop(3));
 
-        for (PostStore.Note note : store.getNotes()) {
-            LinearLayout row = new LinearLayout(this);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(12), dp(10), dp(8), dp(10));
-            row.setBackground(background("#FBF8F3", 13));
+        TextView addNote = label("+   Add a note", 12, "#354A3C", true);
+        addNote.setGravity(Gravity.CENTER_VERTICAL);
+        addNote.setPadding(dp(15), 0, dp(15), 0);
+        addNote.setBackground(background("#E7EFE0", 14));
+        addNote.setOnClickListener(view -> showNoteDialog(null));
+        section.addView(addNote, new LinearLayout.LayoutParams(-1, dp(46)));
 
-            TextView noteText = label(note.text, 13, "#4E4741", false);
-            noteText.setMaxLines(4);
-            row.addView(noteText, new LinearLayout.LayoutParams(0, -2, 1));
+        List<PostStore.Note> notes = store.getNotes();
+        if (notes.isEmpty()) {
+            TextView empty = label("Your next good idea can start here.", 12, "#77736B", false);
+            empty.setPadding(dp(14), dp(13), dp(14), dp(13));
+            empty.setBackground(background("#FBF8F3", 14));
+            section.addView(empty, marginTop(9));
+        }
+
+        String[] paperColors = {"#FFF1B8", "#E5F0E0", "#FCE3DD"};
+        for (PostStore.Note note : notes) {
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(dp(15), dp(13), dp(13), dp(10));
+            card.setBackground(background(paperColors[(int) (note.id % paperColors.length)], 16));
+            card.setElevation(dp(2));
+            card.setClickable(true);
+            card.setFocusable(true);
+            card.setContentDescription("Edit note: " + note.text);
+            card.setOnClickListener(view -> showNoteDialog(note));
+
+            LinearLayout heading = new LinearLayout(this);
+            heading.setGravity(Gravity.CENTER_VERTICAL);
+            heading.addView(label("IDEA", 9, "#766A47", true),
+                new LinearLayout.LayoutParams(0, -2, 1));
+            String updated = new SimpleDateFormat("d MMM yyyy", Locale.ENGLISH)
+                .format(new Date(note.updatedAt));
+            heading.addView(label(updated, 9, "#766A47", false));
+            card.addView(heading);
+
+            TextView noteText = label(note.text, 14, "#3D4036", false);
+            noteText.setLineSpacing(dp(2), 1f);
+            noteText.setMaxLines(5);
+            card.addView(noteText, marginTop(8));
 
             LinearLayout actions = new LinearLayout(this);
-            actions.setOrientation(LinearLayout.VERTICAL);
-            TextView edit = label("EDIT", 8, "#52634C", true);
+            actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            TextView edit = label("EDIT", 9, "#52634C", true);
             edit.setGravity(Gravity.CENTER);
             edit.setContentDescription("Edit note");
             edit.setOnClickListener(view -> showNoteDialog(note));
-            actions.addView(edit, new LinearLayout.LayoutParams(dp(42), dp(30)));
-            TextView delete = label("DELETE", 8, "#8D625C", true);
+            actions.addView(edit, new LinearLayout.LayoutParams(dp(48), dp(32)));
+            TextView delete = label("DELETE", 9, "#8D625C", true);
             delete.setGravity(Gravity.CENTER);
             delete.setContentDescription("Delete note");
             delete.setOnClickListener(view -> showDeleteNoteConfirmation(note));
-            actions.addView(delete, new LinearLayout.LayoutParams(dp(42), dp(30)));
-            row.addView(actions, marginStart(6));
-            section.addView(row, marginTop(7));
+            actions.addView(delete, new LinearLayout.LayoutParams(dp(56), dp(32)));
+            card.addView(actions, marginTop(4));
+            section.addView(card, marginTop(9));
         }
         return section;
     }
 
     private void showNoteDialog(PostStore.Note note) {
         EditText text = new EditText(this);
-        text.setTextSize(15);
-        text.setMinLines(4);
-        text.setMaxLines(8);
+        text.setTextSize(18);
+        text.setMinLines(8);
+        text.setMaxLines(14);
+        text.setMinHeight(dp(280));
         text.setGravity(Gravity.TOP | Gravity.START);
-        text.setHint("Write a note...");
-        text.setPadding(dp(14), dp(10), dp(14), dp(10));
-        text.setBackground(background("#FBF8F3", 14));
+        text.setHint("An idea, a reminder, a little plan...");
+        text.setTextColor(color("#3D4036"));
+        text.setHintTextColor(color("#8D8160"));
+        text.setPadding(0, dp(12), 0, dp(12));
+        text.setBackgroundColor(Color.TRANSPARENT);
+        text.setLineSpacing(dp(3), 1f);
         if (note != null) {
             text.setText(note.text);
             text.setSelection(text.length());
         }
 
+        LinearLayout paper = new LinearLayout(this);
+        paper.setOrientation(LinearLayout.VERTICAL);
+        paper.setPadding(dp(18), dp(17), dp(18), dp(13));
+        paper.setBackground(background("#FFF1B8", 19));
+        paper.setElevation(dp(3));
+        paper.addView(label(note == null ? "A NEW IDEA" : "YOUR NOTE",
+            9, "#766A47", true));
+        paper.addView(text, new LinearLayout.LayoutParams(-1, -2));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setClipToPadding(false);
+        scroll.addView(paper);
+        scroll.setPadding(dp(2), dp(2), dp(2), dp(4));
+
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(note == null ? "New note" : "Edit note")
-                .setView(text)
+            .setTitle(note == null ? "Capture a thought" : "Edit your note")
+            .setView(scroll)
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Save", null)
                 .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(view -> {
-                    String noteText = text.getText().toString().trim();
-                    if (noteText.isEmpty()) {
-                        text.setError("Write something first.");
-                        return;
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                String noteText = text.getText().toString().trim();
+                if (noteText.isEmpty()) {
+                    text.setError("Write something first.");
+                    return;
+                }
+                try {
+                    if (note == null) {
+                        store.addNote(noteText);
+                    } else {
+                        store.updateNote(note.id, noteText);
                     }
-                    try {
-                        if (note == null) {
-                            store.addNote(noteText);
-                        } else {
-                            store.updateNote(note.id, noteText);
-                        }
-                        dialog.dismiss();
-                        renderHome();
-                    } catch (Exception exception) {
-                        showError("Could not save your note. Please try again.");
-                    }
-                }));
+                    dialog.dismiss();
+                    renderHome();
+                } catch (Exception exception) {
+                    showError("Could not save your note. Please try again.");
+                }
+            });
+            if (dialog.getWindow() != null) {
+                int width = Math.min(getResources().getDisplayMetrics().widthPixels - dp(40), dp(520));
+                int height = Math.min(getResources().getDisplayMetrics().heightPixels - dp(100), dp(640));
+                dialog.getWindow().setLayout(width, height);
+                dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            }
+        });
         dialog.show();
     }
 
@@ -941,6 +999,7 @@ public final class MainActivity extends Activity {
         LinearLayout stats = new LinearLayout(this);
         stats.setOrientation(LinearLayout.HORIZONTAL);
         stats.addView(statCard(Integer.toString(posts.size()), "MEMORIES"), statWeight());
+        stats.addView(statCard(Integer.toString(store.getNotes().size()), "NOTES"), statWeight());
         stats.addView(statCard(Integer.toString(commentCount), "YOUR WORDS"), statWeight());
         stats.addView(statCard(Integer.toString(countVideos(posts)), "VIDEOS"), statWeight());
         return stats;
