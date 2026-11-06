@@ -17,6 +17,7 @@ import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.ExifInterface;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
@@ -289,8 +290,100 @@ public final class MainActivity extends Activity {
         screenContent.addView(sectionHeading("Only yours. Always.", null), marginTop(16));
         screenContent.addView(buildPrivacyCard(), marginTop(6));
         screenContent.addView(buildViewMemoriesButton(), marginTop(10));
+        screenContent.addView(buildHomeNotes(), marginTop(18));
         updateNavigation();
         scrollToTop();
+    }
+
+    private View buildHomeNotes() {
+        LinearLayout section = new LinearLayout(this);
+        section.setOrientation(LinearLayout.VERTICAL);
+        section.addView(label("Got something on your mind? Write it down", 16, "#2E3B32", true));
+        section.addView(memoryActionButton("Add note", view -> showNoteDialog(null)), marginTop(8));
+
+        for (PostStore.Note note : store.getNotes()) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(10), dp(8), dp(10));
+            row.setBackground(background("#FBF8F3", 13));
+
+            TextView noteText = label(note.text, 13, "#4E4741", false);
+            noteText.setMaxLines(4);
+            row.addView(noteText, new LinearLayout.LayoutParams(0, -2, 1));
+
+            LinearLayout actions = new LinearLayout(this);
+            actions.setOrientation(LinearLayout.VERTICAL);
+            TextView edit = label("EDIT", 8, "#52634C", true);
+            edit.setGravity(Gravity.CENTER);
+            edit.setContentDescription("Edit note");
+            edit.setOnClickListener(view -> showNoteDialog(note));
+            actions.addView(edit, new LinearLayout.LayoutParams(dp(42), dp(30)));
+            TextView delete = label("DELETE", 8, "#8D625C", true);
+            delete.setGravity(Gravity.CENTER);
+            delete.setContentDescription("Delete note");
+            delete.setOnClickListener(view -> showDeleteNoteConfirmation(note));
+            actions.addView(delete, new LinearLayout.LayoutParams(dp(42), dp(30)));
+            row.addView(actions, marginStart(6));
+            section.addView(row, marginTop(7));
+        }
+        return section;
+    }
+
+    private void showNoteDialog(PostStore.Note note) {
+        EditText text = new EditText(this);
+        text.setTextSize(15);
+        text.setMinLines(4);
+        text.setMaxLines(8);
+        text.setGravity(Gravity.TOP | Gravity.START);
+        text.setHint("Write a note...");
+        text.setPadding(dp(14), dp(10), dp(14), dp(10));
+        text.setBackground(background("#FBF8F3", 14));
+        if (note != null) {
+            text.setText(note.text);
+            text.setSelection(text.length());
+        }
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(note == null ? "New note" : "Edit note")
+                .setView(text)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    String noteText = text.getText().toString().trim();
+                    if (noteText.isEmpty()) {
+                        text.setError("Write something first.");
+                        return;
+                    }
+                    try {
+                        if (note == null) {
+                            store.addNote(noteText);
+                        } else {
+                            store.updateNote(note.id, noteText);
+                        }
+                        dialog.dismiss();
+                        renderHome();
+                    } catch (Exception exception) {
+                        showError("Could not save your note. Please try again.");
+                    }
+                }));
+        dialog.show();
+    }
+
+    private void showDeleteNoteConfirmation(PostStore.Note note) {
+        new AlertDialog.Builder(this)
+                .setTitle("Delete this note?")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete", (dialog, which) -> {
+                    try {
+                        store.deleteNote(note.id);
+                        renderHome();
+                    } catch (Exception exception) {
+                        showError("Could not delete your note.");
+                    }
+                })
+                .show();
     }
 
     private View buildWelcomeCard() {
@@ -535,7 +628,7 @@ public final class MainActivity extends Activity {
         albumHighlightRow = new LinearLayout(this);
         albumHighlightRow.setGravity(Gravity.TOP);
         for (PostStore.Album album : store.getAlbums()) {
-            albumHighlightRow.addView(albumHighlight(album.name, album.id, album.name), albumHighlightMargins());
+            albumHighlightRow.addView(albumHighlight(album), albumHighlightMargins());
         }
         TextView add = label("+", 24, "#B66E65", false);
         add.setGravity(Gravity.CENTER);
@@ -554,23 +647,35 @@ public final class MainActivity extends Activity {
         return params;
     }
 
-    private View albumHighlight(String title, long albumId, String monogram) {
+    private View albumHighlight(PostStore.Album album) {
         LinearLayout column = new LinearLayout(this);
         column.setGravity(Gravity.CENTER_HORIZONTAL);
         column.setOrientation(LinearLayout.VERTICAL);
-        TextView cover = label(albumMonogram(monogram), 14, "#52634C", true);
+        TextView cover = label(albumMark(album.name, store.getAlbumEmoji(album.id)), 20, "#52634C", true);
         cover.setGravity(Gravity.CENTER);
-        cover.setTag(Long.valueOf(albumId));
-        cover.setBackground(background(albumId == albumFilterId
+        cover.setTag(Long.valueOf(album.id));
+        cover.setBackground(background(album.id == albumFilterId
                 ? "#F3E8DF" : "#EFF2E9", 50));
         column.addView(cover, new LinearLayout.LayoutParams(dp(57), dp(57)));
-        column.addView(label(title, 9, "#4E4741", false), marginTop(5));
-        column.setOnClickListener(view -> {
-            albumFilterId = albumFilterId == albumId ? -1 : albumId;
+        cover.setOnClickListener(view -> {
+            albumFilterId = albumFilterId == album.id ? -1 : album.id;
             syncMemoryAlbumFilter();
             updateAlbumHighlightSelection();
             renderFeed();
         });
+        cover.setOnLongClickListener(view -> {
+            showEditAlbumDialog(album);
+            return true;
+        });
+        TextView title = label(album.name, 9, "#4E4741", false);
+        title.setMaxLines(1);
+        title.setContentDescription("Edit album name and emoji");
+        title.setOnClickListener(view -> showEditAlbumDialog(album));
+        column.addView(title, marginTop(5));
+        TextView edit = label("Edit", 8, "#8D625C", true);
+        edit.setContentDescription("Edit album name and emoji");
+        edit.setOnClickListener(view -> showEditAlbumDialog(album));
+        column.addView(edit, marginTop(2));
         return column;
     }
 
@@ -626,6 +731,125 @@ public final class MainActivity extends Activity {
         return trimmed.length() <= 2
                 ? trimmed.toUpperCase(Locale.ENGLISH)
                 : trimmed.substring(0, 1).toUpperCase(Locale.ENGLISH);
+    }
+
+    private String albumMark(String name, String emoji) {
+        return emoji == null || emoji.isEmpty() ? albumMonogram(name) : emoji;
+    }
+
+    private String[] albumEmojis() {
+        int[] codePoints = {0x1F33F, 0x1F338, 0x1F33B, 0x1F343, 0x1F340, 0x1F33A,
+                0x1F30A, 0x1F31E, 0x1F319, 0x2728, 0x1F48C, 0x1F4D6,
+                0x1F4F7, 0x1F381, 0x1F3A8, 0x1F6B2};
+        String[] emojis = new String[codePoints.length];
+        for (int i = 0; i < codePoints.length; i++) {
+            emojis[i] = new String(Character.toChars(codePoints[i]));
+        }
+        return emojis;
+    }
+
+    private void showEditAlbumDialog(PostStore.Album album) {
+        showAlbumDialog(album.id, -1, this::refreshCurrentScreen);
+    }
+
+    private void showAlbumDialog(long albumId, long postId, Runnable onSaved) {
+        boolean editing = albumId >= 0;
+        String initialName = editing ? findAlbumName(albumId) : "";
+        String[] selectedEmoji = {editing ? store.getAlbumEmoji(albumId) : ""};
+
+        EditText name = new EditText(this);
+        name.setSingleLine(true);
+        name.setTextSize(15);
+        name.setHint("Album name");
+        name.setTextColor(color("#2E3B32"));
+        name.setHintTextColor(color("#8D625C"));
+        name.setPadding(dp(16), 0, dp(16), 0);
+        name.setBackground(background("#FBF8F3", 14));
+        name.setText(initialName);
+
+        TextView emoji = label(albumMark(initialName, selectedEmoji[0]), 25, "#52634C", true);
+        emoji.setGravity(Gravity.CENTER);
+        emoji.setBackground(background("#EFF2E9", 50));
+        emoji.setContentDescription("Choose album emoji");
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(8), dp(20), dp(4));
+        content.addView(label("ALBUM NAME", 9, "#8D625C", true));
+        content.addView(name, marginTop(5));
+        content.addView(label("RING EMOJI", 9, "#8D625C", true), marginTop(12));
+        content.addView(emoji, new LinearLayout.LayoutParams(dp(57), dp(57)));
+        emoji.setOnClickListener(view -> {
+            String[] options = albumEmojis();
+            new AlertDialog.Builder(this)
+                    .setTitle("Choose an emoji")
+                    .setItems(options, (dialog, selected) -> {
+                        selectedEmoji[0] = options[selected];
+                        emoji.setText(selectedEmoji[0]);
+                    })
+                    .setNeutralButton("Use initial", (dialog, which) -> {
+                        selectedEmoji[0] = "";
+                        emoji.setText(albumMark(name.getText().toString(), ""));
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        name.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(CharSequence text, int start, int before, int count) {
+                if (selectedEmoji[0].isEmpty()) {
+                    emoji.setText(albumMark(text.toString(), ""));
+                }
+            }
+
+            @Override
+            public void afterTextChanged(Editable text) {}
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(editing ? "Edit album" : "Create an album")
+                .setView(content)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton(editing ? "Save" : "Create", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    String albumName = name.getText().toString().trim();
+                    if (albumName.isEmpty()) {
+                        name.setError("Enter an album name.");
+                        return;
+                    }
+                    try {
+                        if (editing) {
+                            store.updateAlbum(albumId, albumName, selectedEmoji[0]);
+                        } else {
+                            long newAlbumId = store.addAlbum(albumName);
+                            store.updateAlbum(newAlbumId, albumName, selectedEmoji[0]);
+                            if (postId >= 0) {
+                                store.setPostAlbum(postId, newAlbumId);
+                            }
+                        }
+                        dialog.dismiss();
+                        onSaved.run();
+                    } catch (android.database.sqlite.SQLiteConstraintException exception) {
+                        name.setError("An album with that name already exists.");
+                    } catch (Exception exception) {
+                        showError("Could not save the album. Please try again.");
+                    }
+                }));
+        dialog.show();
+    }
+
+    private String findAlbumName(long albumId) {
+        for (PostStore.Album album : store.getAlbums()) {
+            if (album.id == albumId) {
+                return album.name;
+            }
+        }
+        return "";
     }
 
     private EditText buildMemoriesSearch() {
@@ -801,41 +1025,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showCreateAlbumDialog(long postId, Runnable onCreated) {
-        EditText name = new EditText(this);
-        name.setSingleLine(true);
-        name.setTextSize(15);
-        name.setHint("Album name");
-        name.setTextColor(color("#2E3B32"));
-        name.setHintTextColor(color("#8D625C"));
-        name.setPadding(dp(16), 0, dp(16), 0);
-        name.setBackground(background("#FBF8F3", 14));
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Create an album")
-                .setView(name)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Create", null)
-                .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(view -> {
-                    String albumName = name.getText().toString().trim();
-                    if (albumName.isEmpty()) {
-                        name.setError("Enter an album name.");
-                        return;
-                    }
-                    try {
-                        long albumId = store.addAlbum(albumName);
-                        if (postId >= 0) {
-                            store.setPostAlbum(postId, albumId);
-                        }
-                        dialog.dismiss();
-                        onCreated.run();
-                    } catch (android.database.sqlite.SQLiteConstraintException exception) {
-                        name.setError("An album with that name already exists.");
-                    } catch (Exception exception) {
-                        showError("Could not create the album. Please try again.");
-                    }
-                }));
-        dialog.show();
+        showAlbumDialog(-1, postId, onCreated);
     }
 
     private TextView buildDateFilterButton() {
@@ -1606,7 +1796,7 @@ public final class MainActivity extends Activity {
                 bounds.outHeight / (options.inSampleSize * 2)) >= 1600) {
             options.inSampleSize *= 2;
         }
-        return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+        return decodeOrientedPhoto(file, options);
     }
 
     private void showExpandedPhoto(PhotoViewerState state) {
@@ -1922,7 +2112,7 @@ public final class MainActivity extends Activity {
                         bounds.outHeight / (options.inSampleSize * 2)) >= 480) {
                     options.inSampleSize *= 2;
                 }
-                Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+                Bitmap bitmap = decodeOrientedPhoto(file, options);
                 if (bitmap != null) {
                     return bitmap;
                 }
@@ -1931,6 +2121,59 @@ public final class MainActivity extends Activity {
             return placeholderBitmap();
         }
         return placeholderBitmap();
+    }
+
+    private Bitmap decodeOrientedPhoto(File file, BitmapFactory.Options options) {
+        Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+        if (bitmap == null) {
+            return null;
+        }
+
+        int orientation;
+        try {
+            ExifInterface exif = new ExifInterface(file.getAbsolutePath());
+            orientation = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED);
+        } catch (Exception exception) {
+            return bitmap;
+        }
+
+        Matrix transform = new Matrix();
+        switch (orientation) {
+            case ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+                transform.setScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_180:
+                transform.setRotate(180f);
+                break;
+            case ExifInterface.ORIENTATION_FLIP_VERTICAL:
+                transform.setRotate(180f);
+                transform.postScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_TRANSPOSE:
+                transform.setRotate(90f);
+                transform.postScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_90:
+                transform.setRotate(90f);
+                break;
+            case ExifInterface.ORIENTATION_TRANSVERSE:
+                transform.setRotate(-90f);
+                transform.postScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_270:
+                transform.setRotate(-90f);
+                break;
+            default:
+                return bitmap;
+        }
+
+        Bitmap oriented = Bitmap.createBitmap(bitmap, 0, 0,
+                bitmap.getWidth(), bitmap.getHeight(), transform, true);
+        if (oriented != bitmap) {
+            bitmap.recycle();
+        }
+        return oriented;
     }
 
     private Bitmap placeholderBitmap() {
@@ -1990,6 +2233,12 @@ public final class MainActivity extends Activity {
     private LinearLayout.LayoutParams marginTop(int dp) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.topMargin = dp(dp);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams marginStart(int dp) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+        params.leftMargin = dp(dp);
         return params;
     }
 

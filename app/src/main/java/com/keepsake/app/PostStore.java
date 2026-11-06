@@ -11,7 +11,7 @@ import java.util.List;
 
 final class PostStore extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "keepsake.db";
-    private static final int DATABASE_VERSION = 2;
+    private static final int DATABASE_VERSION = 3;
 
     PostStore(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -19,9 +19,10 @@ final class PostStore extends SQLiteOpenHelper {
 
     @Override
     public void onCreate(SQLiteDatabase database) {
-        database.execSQL("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, created_at INTEGER NOT NULL)");
+        database.execSQL("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, emoji TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)");
         database.execSQL("CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT NOT NULL, media_type TEXT NOT NULL, caption TEXT NOT NULL, created_at INTEGER NOT NULL, album_id INTEGER REFERENCES albums(id) ON DELETE SET NULL)");
         database.execSQL("CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, text TEXT NOT NULL, created_at INTEGER NOT NULL)");
+        database.execSQL("CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
     }
 
     @Override
@@ -29,6 +30,10 @@ final class PostStore extends SQLiteOpenHelper {
         if (oldVersion < 2) {
             database.execSQL("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, created_at INTEGER NOT NULL)");
             database.execSQL("ALTER TABLE posts ADD COLUMN album_id INTEGER REFERENCES albums(id) ON DELETE SET NULL");
+        }
+        if (oldVersion < 3) {
+            database.execSQL("ALTER TABLE albums ADD COLUMN emoji TEXT NOT NULL DEFAULT ''");
+            database.execSQL("CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
         }
     }
 
@@ -85,6 +90,52 @@ final class PostStore extends SQLiteOpenHelper {
         values.put("name", name);
         values.put("created_at", System.currentTimeMillis());
         return getWritableDatabase().insertOrThrow("albums", null, values);
+    }
+
+    void updateAlbum(long albumId, String name, String emoji) {
+        ContentValues values = new ContentValues();
+        values.put("name", name);
+        values.put("emoji", emoji);
+        getWritableDatabase().update("albums", values, "id = ?", new String[]{Long.toString(albumId)});
+    }
+
+    String getAlbumEmoji(long albumId) {
+        try (Cursor cursor = getReadableDatabase().query("albums", new String[]{"emoji"},
+                "id = ?", new String[]{Long.toString(albumId)}, null, null, null)) {
+            return cursor.moveToFirst() ? cursor.getString(0) : "";
+        }
+    }
+
+    long addNote(String text) {
+        long now = System.currentTimeMillis();
+        ContentValues values = new ContentValues();
+        values.put("text", text);
+        values.put("created_at", now);
+        values.put("updated_at", now);
+        return getWritableDatabase().insertOrThrow("notes", null, values);
+    }
+
+    void updateNote(long noteId, String text) {
+        ContentValues values = new ContentValues();
+        values.put("text", text);
+        values.put("updated_at", System.currentTimeMillis());
+        getWritableDatabase().update("notes", values, "id = ?", new String[]{Long.toString(noteId)});
+    }
+
+    void deleteNote(long noteId) {
+        getWritableDatabase().delete("notes", "id = ?", new String[]{Long.toString(noteId)});
+    }
+
+    List<Note> getNotes() {
+        List<Note> notes = new ArrayList<>();
+        try (Cursor cursor = getReadableDatabase().query("notes",
+                new String[]{"id", "text", "updated_at"}, null, null, null, null,
+                "updated_at DESC, id DESC")) {
+            while (cursor.moveToNext()) {
+                notes.add(new Note(cursor.getLong(0), cursor.getString(1), cursor.getLong(2)));
+            }
+        }
+        return notes;
     }
 
     void setPostAlbum(long postId, long albumId) {
@@ -172,6 +223,18 @@ final class PostStore extends SQLiteOpenHelper {
         Album(long id, String name) {
             this.id = id;
             this.name = name;
+        }
+    }
+
+    static final class Note {
+        final long id;
+        final String text;
+        final long updatedAt;
+
+        Note(long id, String text, long updatedAt) {
+            this.id = id;
+            this.text = text;
+            this.updatedAt = updatedAt;
         }
     }
 
