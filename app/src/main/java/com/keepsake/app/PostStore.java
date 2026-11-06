@@ -11,7 +11,7 @@ import java.util.List;
 
 final class PostStore extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "keepsake.db";
-    private static final int DATABASE_VERSION = 3;
+    private static final int DATABASE_VERSION = 4;
 
     PostStore(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -20,7 +20,7 @@ final class PostStore extends SQLiteOpenHelper {
     @Override
     public void onCreate(SQLiteDatabase database) {
         database.execSQL("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, emoji TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)");
-        database.execSQL("CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT NOT NULL, media_type TEXT NOT NULL, caption TEXT NOT NULL, created_at INTEGER NOT NULL, album_id INTEGER REFERENCES albums(id) ON DELETE SET NULL)");
+        database.execSQL("CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT NOT NULL, media_type TEXT NOT NULL, caption TEXT NOT NULL, created_at INTEGER NOT NULL, album_id INTEGER REFERENCES albums(id) ON DELETE SET NULL, album_order INTEGER NOT NULL DEFAULT 0)");
         database.execSQL("CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, text TEXT NOT NULL, created_at INTEGER NOT NULL)");
         database.execSQL("CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
     }
@@ -35,6 +35,9 @@ final class PostStore extends SQLiteOpenHelper {
             database.execSQL("ALTER TABLE albums ADD COLUMN emoji TEXT NOT NULL DEFAULT ''");
             database.execSQL("CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
         }
+        if (oldVersion < 4) {
+            database.execSQL("ALTER TABLE posts ADD COLUMN album_order INTEGER NOT NULL DEFAULT 0");
+        }
     }
 
     @Override
@@ -43,6 +46,11 @@ final class PostStore extends SQLiteOpenHelper {
     }
 
     long addPost(String fileName, String mediaType, String caption, long albumId) {
+        return addPost(fileName, mediaType, caption, albumId,
+            albumId < 0 ? 0 : getAlbumPostCount(albumId));
+    }
+
+    long addPost(String fileName, String mediaType, String caption, long albumId, int albumOrder) {
         ContentValues values = new ContentValues();
         values.put("file_name", fileName);
         values.put("media_type", mediaType);
@@ -50,15 +58,39 @@ final class PostStore extends SQLiteOpenHelper {
         values.put("created_at", System.currentTimeMillis());
         if (albumId >= 0) {
             values.put("album_id", albumId);
+            values.put("album_order", albumOrder);
         }
         return getWritableDatabase().insertOrThrow("posts", null, values);
+    }
+
+    void addPhotosToAlbum(long albumId, List<String> fileNames) {
+        SQLiteDatabase database = getWritableDatabase();
+        database.beginTransaction();
+        try {
+            int albumOrder = getAlbumPostCount(albumId);
+            long createdAt = System.currentTimeMillis();
+            for (String fileName : fileNames) {
+                ContentValues values = new ContentValues();
+                values.put("file_name", fileName);
+                values.put("media_type", "image");
+                values.put("caption", "");
+                values.put("created_at", createdAt++);
+                values.put("album_id", albumId);
+                values.put("album_order", albumOrder++);
+                database.insertOrThrow("posts", null, values);
+            }
+            database.setTransactionSuccessful();
+        } finally {
+            database.endTransaction();
+        }
     }
 
     List<Post> getPosts() {
         List<Post> posts = new ArrayList<>();
         try (Cursor cursor = getReadableDatabase().rawQuery(
                 "SELECT posts.id, posts.file_name, posts.media_type, posts.caption, posts.created_at, " +
-                        "posts.album_id, albums.name FROM posts LEFT JOIN albums ON albums.id = posts.album_id " +
+                    "posts.album_id, albums.name, posts.album_order FROM posts " +
+                    "LEFT JOIN albums ON albums.id = posts.album_id " +
                         "ORDER BY posts.created_at DESC", null)) {
             while (cursor.moveToNext()) {
                 posts.add(new Post(
@@ -68,10 +100,36 @@ final class PostStore extends SQLiteOpenHelper {
                         cursor.getString(3),
                         cursor.getLong(4),
                         cursor.isNull(5) ? -1 : cursor.getLong(5),
-                        cursor.getString(6)));
+                        cursor.getString(6),
+                        cursor.getInt(7)));
             }
         }
         return posts;
+    }
+
+    List<Post> getAlbumPosts(long albumId) {
+        List<Post> posts = new ArrayList<>();
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT posts.id, posts.file_name, posts.media_type, posts.caption, posts.created_at, " +
+                        "posts.album_id, albums.name, posts.album_order FROM posts " +
+                        "JOIN albums ON albums.id = posts.album_id WHERE posts.album_id = ? " +
+                        "ORDER BY posts.album_order ASC, posts.created_at ASC, posts.id ASC",
+                new String[]{Long.toString(albumId)})) {
+            while (cursor.moveToNext()) {
+                posts.add(new Post(cursor.getLong(0), cursor.getString(1), cursor.getString(2),
+                        cursor.getString(3), cursor.getLong(4), cursor.getLong(5),
+                        cursor.getString(6), cursor.getInt(7)));
+            }
+        }
+        return posts;
+    }
+
+    int getAlbumPostCount(long albumId) {
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT COUNT(*) FROM posts WHERE album_id = ?",
+                new String[]{Long.toString(albumId)})) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
     }
 
     List<Album> getAlbums() {
@@ -142,10 +200,28 @@ final class PostStore extends SQLiteOpenHelper {
         ContentValues values = new ContentValues();
         if (albumId >= 0) {
             values.put("album_id", albumId);
+            values.put("album_order", getAlbumPostCount(albumId));
         } else {
             values.putNull("album_id");
+            values.put("album_order", 0);
         }
         getWritableDatabase().update("posts", values, "id = ?", new String[]{Long.toString(postId)});
+    }
+
+    void reorderAlbumPosts(long albumId, List<Long> postIds) {
+        SQLiteDatabase database = getWritableDatabase();
+        database.beginTransaction();
+        try {
+            ContentValues values = new ContentValues();
+            for (int i = 0; i < postIds.size(); i++) {
+                values.put("album_order", i);
+                database.update("posts", values, "id = ? AND album_id = ?",
+                        new String[]{Long.toString(postIds.get(i)), Long.toString(albumId)});
+            }
+            database.setTransactionSuccessful();
+        } finally {
+            database.endTransaction();
+        }
     }
 
     void updateCaption(long postId, String caption) {
@@ -203,9 +279,10 @@ final class PostStore extends SQLiteOpenHelper {
         final long createdAt;
         final long albumId;
         final String albumName;
+           final int albumOrder;
 
         Post(long id, String fileName, String mediaType, String caption, long createdAt,
-             long albumId, String albumName) {
+               long albumId, String albumName, int albumOrder) {
             this.id = id;
             this.fileName = fileName;
             this.mediaType = mediaType;
@@ -213,6 +290,7 @@ final class PostStore extends SQLiteOpenHelper {
             this.createdAt = createdAt;
             this.albumId = albumId;
             this.albumName = albumName;
+            this.albumOrder = albumOrder;
         }
     }
 

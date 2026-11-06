@@ -10,8 +10,8 @@ android {
         applicationId = "com.keepsake.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 5
+        versionName = "1.0.4"
     }
 
     compileOptions {
@@ -51,4 +51,9 @@ android {
             }
         }
     }
+}
+
+dependencies {
+    implementation("androidx.media3:media3-transformer:1.11.1")
+    implementation("androidx.media3:media3-effect:1.11.1")
 }

@@ -6,6 +6,7 @@ import android.app.DatePickerDialog;
 import android.app.Dialog;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -18,16 +19,20 @@ import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.ExifInterface;
+import android.media.MediaPlayer;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.webkit.MimeTypeMap;
 import android.view.Gravity;
 import android.view.GestureDetector;
+import android.view.DragEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -43,6 +48,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -67,11 +73,17 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_IMPORT_VIDEO = 2;
     private static final int REQUEST_CAPTURE_PHOTO = 3;
     private static final int REQUEST_CAPTURE_VIDEO = 4;
+    private static final int REQUEST_IMPORT_REEL = 5;
+    private static final int REQUEST_REEL_ADD_IMAGES = 6;
+    private static final int REQUEST_CAPTURE_REEL_IMAGE = 7;
+    private static final int REQUEST_REEL_MUSIC = 8;
+    private static final int REQUEST_IMPORT_ALBUM_PHOTOS = 9;
     private static final String STATE_PENDING_URI = "pending_uri";
     private static final String STATE_PENDING_TYPE = "pending_type";
     private static final String COLOR_BLUSH = "#F8E9E5";
 
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private PostStore store;
     private LinearLayout feed;
     private LinearLayout screenContent;
@@ -87,6 +99,26 @@ public final class MainActivity extends Activity {
     private long dateFilter = -1;
     private Uri pendingUri;
     private String pendingMediaType;
+    private long pendingAlbumImportId = -1;
+    private final List<ReelSlide> reelSlides = new ArrayList<>();
+    private File reelMusicFile;
+    private String reelMusicName;
+    private int currentReelIndex;
+    private Dialog reelDialog;
+    private LinearLayout reelTimeline;
+    private ImageView reelPreviewImage;
+    private TextView reelPreviewCounter;
+    private TextView reelPreviewPlayButton;
+    private TextView reelDurationLabel;
+    private SeekBar reelDurationSeekBar;
+    private EditText reelOverlayText;
+    private Spinner reelAlbumPicker;
+    private Spinner reelTransitionPicker;
+    private TextView reelMusicButton;
+    private TextView reelPublishButton;
+    private boolean isReelPreviewPlaying;
+    private Runnable reelPreviewRunnable;
+    private MediaPlayer reelPreviewMusicPlayer;
     private OnBackInvokedCallback backInvokedCallback;
 
     @Override
@@ -662,8 +694,11 @@ public final class MainActivity extends Activity {
         actions.addView(memoryActionButton("Create album", view -> showCreateAlbumDialog(-1)),
                 actionButtonWeight());
         LinearLayout.LayoutParams addParams = actionButtonWeight();
-        addParams.setMargins(dp(8), 0, 0, 0);
+        addParams.setMargins(dp(5), 0, 0, 0);
         actions.addView(memoryActionButton("Add memory", view -> showCreateMenu()), addParams);
+        LinearLayout.LayoutParams photosParams = actionButtonWeight();
+        photosParams.setMargins(dp(5), 0, 0, 0);
+        actions.addView(memoryActionButton("Add photos", view -> showAddPhotosToAlbum()), photosParams);
         return actions;
     }
 
@@ -734,7 +769,119 @@ public final class MainActivity extends Activity {
         edit.setContentDescription("Edit album name and emoji");
         edit.setOnClickListener(view -> showEditAlbumDialog(album));
         column.addView(edit, marginTop(2));
+        TextView order = label("Order", 8, "#52634C", true);
+        order.setContentDescription("Reorder photos in album");
+        order.setOnClickListener(view -> showAlbumOrderDialog(album));
+        column.addView(order, marginTop(2));
         return column;
+    }
+
+    private void showAlbumOrderDialog(PostStore.Album album) {
+        List<PostStore.Post> orderedPosts = new ArrayList<>(store.getAlbumPosts(album.id));
+        if (orderedPosts.size() < 2) {
+            showError("Add at least two photos to reorder this album.");
+            return;
+        }
+
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        rows.setPadding(dp(16), dp(6), dp(16), dp(6));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.addView(rows);
+        rebuildAlbumOrderRows(rows, orderedPosts);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Order " + album.name)
+                .setMessage("Hold a photo and drag it to its new position.")
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save order", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    List<Long> postIds = new ArrayList<>();
+                    for (PostStore.Post post : orderedPosts) {
+                        postIds.add(post.id);
+                    }
+                    try {
+                        store.reorderAlbumPosts(album.id, postIds);
+                        dialog.dismiss();
+                        refreshCurrentScreen();
+                    } catch (Exception exception) {
+                        showError("Could not save this album order.");
+                    }
+                }));
+        dialog.show();
+    }
+
+    private void rebuildAlbumOrderRows(LinearLayout rows, List<PostStore.Post> orderedPosts) {
+        rows.removeAllViews();
+        for (int i = 0; i < orderedPosts.size(); i++) {
+            PostStore.Post post = orderedPosts.get(i);
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(9), dp(8), dp(9), dp(8));
+            row.setBackground(background(i % 2 == 0 ? "#FBF8F3" : "#F3E9E3", 12));
+            row.setTag(Integer.valueOf(i));
+
+            ImageView thumbnail = new ImageView(this);
+            thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            thumbnail.setImageBitmap(readPreview(
+                    new File(getFilesDir(), "media/" + post.fileName), post.mediaType));
+            row.addView(thumbnail, new LinearLayout.LayoutParams(dp(54), dp(64)));
+
+            LinearLayout details = new LinearLayout(this);
+            details.setOrientation(LinearLayout.VERTICAL);
+            details.setPadding(dp(10), 0, 0, 0);
+            details.addView(label((i + 1) + "   " + (post.caption.isEmpty()
+                    ? formatDate(post.createdAt) : post.caption), 11, "#2E3B32", true));
+            details.addView(label(post.mediaType.toUpperCase(Locale.ENGLISH),
+                    9, "#8D625C", true), marginTop(3));
+            row.addView(details, new LinearLayout.LayoutParams(0, -2, 1));
+            row.setOnLongClickListener(view -> {
+                ClipData dragData = ClipData.newPlainText("Album photo", Long.toString(post.id));
+                return row.startDragAndDrop(dragData, new View.DragShadowBuilder(row),
+                        Long.valueOf(post.id), 0);
+            });
+            row.setOnDragListener((target, event) -> {
+                switch (event.getAction()) {
+                    case DragEvent.ACTION_DRAG_STARTED:
+                    case DragEvent.ACTION_DRAG_ENTERED:
+                    case DragEvent.ACTION_DRAG_LOCATION:
+                    case DragEvent.ACTION_DRAG_EXITED:
+                        return true;
+                    case DragEvent.ACTION_DROP:
+                        if (!(event.getLocalState() instanceof Long)
+                                || !(target.getTag() instanceof Integer)) {
+                            return false;
+                        }
+                        long draggedId = (Long) event.getLocalState();
+                        int targetIndex = (Integer) target.getTag();
+                        int sourceIndex = -1;
+                        for (int itemIndex = 0; itemIndex < orderedPosts.size(); itemIndex++) {
+                            if (orderedPosts.get(itemIndex).id == draggedId) {
+                                sourceIndex = itemIndex;
+                                break;
+                            }
+                        }
+                        if (sourceIndex >= 0 && targetIndex >= 0
+                                && targetIndex < orderedPosts.size() && sourceIndex != targetIndex) {
+                            PostStore.Post moved = orderedPosts.remove(sourceIndex);
+                            orderedPosts.add(targetIndex, moved);
+                            rebuildAlbumOrderRows(rows, orderedPosts);
+                        }
+                        return true;
+                    case DragEvent.ACTION_DRAG_ENDED:
+                        return true;
+                    default:
+                        return false;
+                }
+            });
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
+            rowParams.setMargins(0, 0, 0, dp(7));
+            rows.addView(row, rowParams);
+        }
     }
 
     private void updateAlbumHighlightSelection() {
@@ -1155,12 +1302,18 @@ public final class MainActivity extends Activity {
         firstRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout secondRow = new LinearLayout(this);
         secondRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout thirdRow = new LinearLayout(this);
+        thirdRow.setOrientation(LinearLayout.HORIZONTAL);
         firstRow.addView(actionButton("Take a photo", "CAMERA", view -> capturePhoto()), weightedAction());
         firstRow.addView(actionButton("Record a video", "VIDEO", view -> captureVideo()), weightedAction());
         secondRow.addView(actionButton("Choose a photo", "PHOTOS", view -> importPhoto()), weightedAction());
         secondRow.addView(actionButton("Choose a video", "VIDEOS", view -> importVideo()), weightedAction());
+        thirdRow.addView(actionButton("Create a Reel", "REEL", view -> launchReelImagePicker()), weightedAction());
+        thirdRow.addView(actionButton("Add photos to album", "ALBUM", view -> showAddPhotosToAlbum()),
+            weightedAction());
         rows.addView(firstRow);
         rows.addView(secondRow, marginTop(10));
+        rows.addView(thirdRow, marginTop(10));
         return rows;
     }
 
@@ -1176,6 +1329,10 @@ public final class MainActivity extends Activity {
             icon = "photo";
         } else if ("VIDEOS".equals(eyebrow)) {
             icon = "video";
+        } else if ("REEL".equals(eyebrow)) {
+            icon = "video";
+        } else if ("ALBUM".equals(eyebrow)) {
+            icon = "photo";
         }
         card.setBackground(background("#FBF1ED", 18));
         NavigationIcon mark = new NavigationIcon(this, icon);
@@ -1269,7 +1426,9 @@ public final class MainActivity extends Activity {
             posts.add(post);
         }
         Comparator<PostStore.Post> comparator;
-        if (sortOrder == 1) {
+        if (albumFilterId >= 0) {
+            comparator = (first, second) -> Integer.compare(first.albumOrder, second.albumOrder);
+        } else if (sortOrder == 1) {
             comparator = (first, second) -> Long.compare(first.createdAt, second.createdAt);
         } else if (sortOrder == 2 || sortOrder == 3) {
             comparator = (first, second) -> postSortName(first).compareToIgnoreCase(postSortName(second));
@@ -1281,6 +1440,49 @@ public final class MainActivity extends Activity {
         }
         Collections.sort(posts, comparator);
         return posts;
+    }
+
+    private void launchReelImagePicker() {
+        launchMultiImagePicker(REQUEST_IMPORT_REEL);
+    }
+
+    private void launchMultiImagePicker(int requestCode) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, requestCode);
+        } catch (Exception exception) {
+            showError("Could not open your photo library.");
+        }
+    }
+
+    private void showAddPhotosToAlbum() {
+        if (albumFilterId >= 0) {
+            launchAlbumPhotoPicker(albumFilterId);
+            return;
+        }
+        List<PostStore.Album> albums = store.getAlbums();
+        if (albums.isEmpty()) {
+            showError("Create an album before adding photos.");
+            return;
+        }
+        String[] names = new String[albums.size()];
+        for (int i = 0; i < albums.size(); i++) {
+            names[i] = albums.get(i).name;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Add photos to which album?")
+                .setItems(names, (dialog, selected) -> launchAlbumPhotoPicker(albums.get(selected).id))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void launchAlbumPhotoPicker(long albumId) {
+        pendingAlbumImportId = albumId;
+        launchMultiImagePicker(REQUEST_IMPORT_ALBUM_PHOTOS);
     }
 
     private String postSortName(PostStore.Post post) {
@@ -1440,7 +1642,45 @@ public final class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode != RESULT_OK) {
-            removeCaptureDestination();
+            if (requestCode == REQUEST_CAPTURE_PHOTO || requestCode == REQUEST_CAPTURE_VIDEO
+                    || requestCode == REQUEST_CAPTURE_REEL_IMAGE) {
+                removeCaptureDestination();
+            }
+            if (requestCode == REQUEST_IMPORT_ALBUM_PHOTOS) {
+                pendingAlbumImportId = -1;
+            }
+            return;
+        }
+
+        if (requestCode == REQUEST_IMPORT_REEL || requestCode == REQUEST_REEL_ADD_IMAGES
+                || requestCode == REQUEST_IMPORT_ALBUM_PHOTOS) {
+            List<Uri> selectedUris = selectedUris(data);
+            if (selectedUris.isEmpty()) {
+                showError("Select at least one photo.");
+            } else if (requestCode == REQUEST_IMPORT_ALBUM_PHOTOS) {
+                importPhotosIntoAlbum(selectedUris, pendingAlbumImportId);
+                pendingAlbumImportId = -1;
+            } else {
+                copyReelImages(selectedUris, requestCode == REQUEST_IMPORT_REEL);
+            }
+            return;
+        }
+
+        if (requestCode == REQUEST_REEL_MUSIC) {
+            Uri music = data == null ? null : data.getData();
+            if (music != null) {
+                importReelMusic(music);
+            }
+            return;
+        }
+
+        if (requestCode == REQUEST_CAPTURE_REEL_IMAGE) {
+            Uri capturedImage = pendingUri;
+            pendingUri = null;
+            pendingMediaType = null;
+            if (capturedImage != null) {
+                copyReelImage(capturedImage, capturedImage);
+            }
             return;
         }
 
@@ -1459,6 +1699,748 @@ public final class MainActivity extends Activity {
             return;
         }
         importIntoPrivateStorage(source, mediaType, capturedUri);
+    }
+
+    private List<Uri> selectedUris(Intent data) {
+        List<Uri> uris = new ArrayList<>();
+        if (data == null) {
+            return uris;
+        }
+        if (data.getClipData() != null) {
+            for (int i = 0; i < data.getClipData().getItemCount(); i++) {
+                Uri uri = data.getClipData().getItemAt(i).getUri();
+                if (uri != null && !uris.contains(uri)) {
+                    uris.add(uri);
+                }
+            }
+        }
+        Uri singleUri = data.getData();
+        if (singleUri != null && !uris.contains(singleUri)) {
+            uris.add(singleUri);
+        }
+        return uris;
+    }
+
+    private void importPhotosIntoAlbum(List<Uri> sources, long albumId) {
+        if (albumId < 0) {
+            showError("Choose an album first.");
+            return;
+        }
+        ioExecutor.execute(() -> {
+            List<File> copiedFiles = new ArrayList<>();
+            try {
+                for (Uri source : sources) {
+                    copiedFiles.add(copyUriToMedia(source, "post_", "jpg"));
+                }
+                runOnUiThread(() -> {
+                    try {
+                        List<String> fileNames = new ArrayList<>();
+                        for (File file : copiedFiles) {
+                            fileNames.add(file.getName());
+                        }
+                        store.addPhotosToAlbum(albumId, fileNames);
+                        refreshCurrentScreen();
+                        Toast.makeText(this, copiedFiles.size() + " photos added to album.",
+                                Toast.LENGTH_SHORT).show();
+                    } catch (Exception exception) {
+                        for (File file : copiedFiles) {
+                            file.delete();
+                        }
+                        showError("Could not add all photos to the album.");
+                    }
+                });
+            } catch (Exception exception) {
+                for (File file : copiedFiles) {
+                    file.delete();
+                }
+                runOnUiThread(() -> showError("Could not import the selected photos."));
+            }
+        });
+    }
+
+    private void copyReelImages(List<Uri> sources, boolean newReel) {
+        ioExecutor.execute(() -> {
+            List<File> copiedFiles = new ArrayList<>();
+            try {
+                for (Uri source : sources) {
+                    copiedFiles.add(normalizeImageForReel(source));
+                }
+                runOnUiThread(() -> {
+                    if (newReel) {
+                        cleanupReelFiles();
+                        reelSlides.clear();
+                        currentReelIndex = 0;
+                    }
+                    for (File file : copiedFiles) {
+                        reelSlides.add(new ReelSlide(file));
+                    }
+                    if (newReel) {
+                        showReelEditor();
+                    } else {
+                        refreshReelTimeline();
+                    }
+                });
+            } catch (Exception exception) {
+                for (File file : copiedFiles) {
+                    file.delete();
+                }
+                runOnUiThread(() -> showError("Could not import the selected photos."));
+            }
+        });
+    }
+
+    private void copyReelImage(Uri source, Uri capturedUri) {
+        ioExecutor.execute(() -> {
+            try {
+                File image = normalizeImageForReel(source);
+                removeCaptureUri(capturedUri);
+                runOnUiThread(() -> {
+                    reelSlides.add(new ReelSlide(image));
+                    refreshReelTimeline();
+                });
+            } catch (Exception exception) {
+                removeCaptureUri(capturedUri);
+                runOnUiThread(() -> showError("Could not save the camera photo."));
+            }
+        });
+    }
+
+    private void importReelMusic(Uri source) {
+        ioExecutor.execute(() -> {
+            File copiedFile = null;
+            try {
+                copiedFile = copyUriToMedia(source, "reel_music_", "m4a");
+                File savedFile = copiedFile;
+                String name = queryDisplayName(source);
+                runOnUiThread(() -> {
+                    if (reelMusicFile != null) {
+                        reelMusicFile.delete();
+                    }
+                    reelMusicFile = savedFile;
+                    reelMusicName = name;
+                    updateReelMusicLabel();
+                    if (isReelPreviewPlaying) {
+                        startReelPreviewMusic();
+                    }
+                });
+            } catch (Exception exception) {
+                if (copiedFile != null) {
+                    copiedFile.delete();
+                }
+                runOnUiThread(() -> showError("Could not add this music file."));
+            }
+        });
+    }
+
+    private File copyUriToMedia(Uri source, String prefix, String fallbackExtension) throws Exception {
+        File directory = new File(getFilesDir(), "media");
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new java.io.IOException("Could not create private media directory");
+        }
+        String mimeType = getContentResolver().getType(source);
+        String extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType);
+        if (extension == null || extension.isEmpty()) {
+            extension = fallbackExtension;
+        }
+        File copiedFile = File.createTempFile(prefix, "." + extension, directory);
+        try (InputStream input = getContentResolver().openInputStream(source);
+             FileOutputStream output = new FileOutputStream(copiedFile)) {
+            if (input == null) {
+                throw new java.io.IOException("Media stream is unavailable");
+            }
+            byte[] buffer = new byte[32 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                output.write(buffer, 0, count);
+            }
+            output.getFD().sync();
+        } catch (Exception exception) {
+            copiedFile.delete();
+            throw exception;
+        }
+        return copiedFile;
+    }
+
+    private File normalizeImageForReel(Uri source) throws Exception {
+        File sourceFile = copyUriToMedia(source, "reel_source_", "jpg");
+        File normalizedFile = null;
+        Bitmap bitmap = null;
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(sourceFile.getAbsolutePath(), bounds);
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            while (Math.max(bounds.outWidth / (options.inSampleSize * 2),
+                    bounds.outHeight / (options.inSampleSize * 2)) >= 1920) {
+                options.inSampleSize *= 2;
+            }
+            bitmap = decodeOrientedPhoto(sourceFile, options);
+            if (bitmap == null) {
+                throw new java.io.IOException("Photo could not be decoded");
+            }
+            File directory = new File(getFilesDir(), "media");
+            normalizedFile = File.createTempFile("reel_", ".jpg", directory);
+            try (FileOutputStream output = new FileOutputStream(normalizedFile)) {
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)) {
+                    throw new java.io.IOException("Photo could not be normalized");
+                }
+                output.getFD().sync();
+            }
+            return normalizedFile;
+        } catch (Exception exception) {
+            if (normalizedFile != null) {
+                normalizedFile.delete();
+            }
+            throw exception;
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled()) {
+                bitmap.recycle();
+            }
+            sourceFile.delete();
+        }
+    }
+
+    private String queryDisplayName(Uri uri) {
+        try (android.database.Cursor cursor = getContentResolver().query(
+                uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME},
+                null, null, null)) {
+            return cursor != null && cursor.moveToFirst()
+                    ? cursor.getString(0) : "Music selected";
+        } catch (Exception exception) {
+            return "Music selected";
+        }
+    }
+
+    private void showReelEditor() {
+        if (reelSlides.isEmpty()) {
+            return;
+        }
+        currentReelIndex = Math.min(currentReelIndex, reelSlides.size() - 1);
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Material_Light_NoActionBar);
+        reelDialog = dialog;
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(12), dp(18), dp(12));
+        root.setBackgroundColor(color(COLOR_BLUSH));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView close = label("CANCEL", 10, "#52634C", true);
+        close.setGravity(Gravity.CENTER);
+        close.setContentDescription("Close Reel editor");
+        close.setOnClickListener(view -> dialog.dismiss());
+        header.addView(close, new LinearLayout.LayoutParams(dp(62), dp(42)));
+        TextView title = label("New Reel", 18, "#2E3B32", true);
+        title.setGravity(Gravity.CENTER);
+        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView spacer = label("", 10, "#52634C", true);
+        header.addView(spacer, new LinearLayout.LayoutParams(dp(62), dp(42)));
+        root.addView(header);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.setClipToPadding(false);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(0, dp(7), 0, dp(12));
+
+        int screenHeightDp = Math.round(getResources().getDisplayMetrics().heightPixels
+                / getResources().getDisplayMetrics().density);
+        int previewHeight = Math.min(390, Math.max(260, Math.round(screenHeightDp * .40f)));
+        int previewWidth = Math.round(previewHeight * 9f / 16f);
+        FrameLayout previewHolder = new FrameLayout(this);
+        previewHolder.setBackground(background("#E8E2D9", 18));
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(-1, dp(previewHeight));
+        previewParams.bottomMargin = dp(8);
+        content.addView(previewHolder, previewParams);
+
+        FrameLayout preview = new FrameLayout(this);
+        preview.setBackground(background("#20251F", 14));
+        preview.setClipToOutline(true);
+        FrameLayout.LayoutParams videoParams = new FrameLayout.LayoutParams(dp(previewWidth),
+                dp(previewHeight), Gravity.CENTER);
+        previewHolder.addView(preview, videoParams);
+        reelPreviewImage = new ImageView(this);
+        reelPreviewImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        preview.addView(reelPreviewImage, new FrameLayout.LayoutParams(-1, -1));
+        reelPreviewCounter = label("", 10, "#FFFFFF", true);
+        reelPreviewCounter.setGravity(Gravity.CENTER);
+        reelPreviewCounter.setPadding(dp(9), dp(5), dp(9), dp(5));
+        reelPreviewCounter.setBackground(background("#AA20251F", 11));
+        FrameLayout.LayoutParams counterParams = new FrameLayout.LayoutParams(-2, -2,
+                Gravity.TOP | Gravity.END);
+        counterParams.setMargins(0, dp(10), dp(10), 0);
+        preview.addView(reelPreviewCounter, counterParams);
+        reelOverlayText = new EditText(this);
+        reelOverlayText.setSingleLine(false);
+        reelOverlayText.setMaxLines(3);
+        reelOverlayText.setGravity(Gravity.CENTER);
+        reelOverlayText.setTextSize(15);
+        reelOverlayText.setTextColor(Color.WHITE);
+        reelOverlayText.setHintTextColor(color("#E5E5E5"));
+        reelOverlayText.setHint("Add text to your Reel");
+        reelOverlayText.setPadding(dp(8), dp(6), dp(8), dp(6));
+        reelOverlayText.setBackground(background("#88313B32", 10));
+        FrameLayout.LayoutParams overlayTextParams = new FrameLayout.LayoutParams(-1, -2,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        overlayTextParams.setMargins(dp(12), 0, dp(12), dp(18));
+        preview.addView(reelOverlayText, overlayTextParams);
+
+        LinearLayout previewControls = new LinearLayout(this);
+        previewControls.setGravity(Gravity.CENTER);
+        TextView previous = memoryActionButton("‹", view -> moveReelPreview(-1, true));
+        previewControls.addView(previous, new LinearLayout.LayoutParams(dp(56), dp(38)));
+        reelPreviewPlayButton = memoryActionButton("PLAY", view -> toggleReelPreview());
+        LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(dp(92), dp(38));
+        playParams.setMargins(dp(8), 0, dp(8), 0);
+        previewControls.addView(reelPreviewPlayButton, playParams);
+        TextView next = memoryActionButton("›", view -> moveReelPreview(1, true));
+        previewControls.addView(next, new LinearLayout.LayoutParams(dp(56), dp(38)));
+        content.addView(previewControls, marginBottom(8));
+
+        GestureDetector swipeDetector = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public boolean onDown(MotionEvent event) {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onFling(MotionEvent first, MotionEvent last,
+                                           float velocityX, float velocityY) {
+                        float deltaX = last.getX() - first.getX();
+                        float deltaY = last.getY() - first.getY();
+                        if (Math.abs(deltaX) > dp(40) && Math.abs(deltaX) > Math.abs(deltaY)) {
+                            moveReelPreview(deltaX < 0 ? 1 : -1, true);
+                            return true;
+                        }
+                        return false;
+                    }
+                });
+        preview.setOnTouchListener((view, event) -> swipeDetector.onTouchEvent(event));
+
+        LinearLayout durationHeading = new LinearLayout(this);
+        durationHeading.setGravity(Gravity.CENTER_VERTICAL);
+        durationHeading.addView(label("PHOTO DURATION", 9, "#8D625C", true),
+                new LinearLayout.LayoutParams(0, -2, 1));
+        reelDurationLabel = label("2 sec", 10, "#52634C", true);
+        durationHeading.addView(reelDurationLabel);
+        content.addView(durationHeading, marginTop(4));
+        reelDurationSeekBar = new SeekBar(this);
+        reelDurationSeekBar.setMax(9);
+        reelDurationSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!reelSlides.isEmpty()) {
+                    int seconds = progress + 1;
+                    reelSlides.get(currentReelIndex).durationSeconds = seconds;
+                    reelDurationLabel.setText(seconds + " sec");
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {}
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        content.addView(reelDurationSeekBar);
+
+        LinearLayout timelineHeading = new LinearLayout(this);
+        timelineHeading.setGravity(Gravity.CENTER_VERTICAL);
+        timelineHeading.addView(label("TIMELINE", 9, "#8D625C", true),
+                new LinearLayout.LayoutParams(0, -2, 1));
+        timelineHeading.addView(label("Hold and drag to reorder", 9, "#77736B", false));
+        content.addView(timelineHeading, marginTop(8));
+        HorizontalScrollView timelineScroll = new HorizontalScrollView(this);
+        timelineScroll.setHorizontalScrollBarEnabled(false);
+        timelineScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        reelTimeline = new LinearLayout(this);
+        reelTimeline.setOrientation(LinearLayout.HORIZONTAL);
+        reelTimeline.setPadding(dp(2), dp(7), dp(2), dp(8));
+        timelineScroll.addView(reelTimeline);
+        content.addView(timelineScroll);
+
+        LinearLayout addRow = new LinearLayout(this);
+        addRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView addPhotos = memoryActionButton("+ Photos", view -> launchMultiImagePicker(REQUEST_REEL_ADD_IMAGES));
+        addRow.addView(addPhotos, new LinearLayout.LayoutParams(0, dp(40), 1));
+        TextView takePhoto = memoryActionButton("Camera", view -> launchCapture(REQUEST_CAPTURE_REEL_IMAGE, "image"));
+        LinearLayout.LayoutParams cameraParams = new LinearLayout.LayoutParams(0, dp(40), 1);
+        cameraParams.setMargins(dp(8), 0, 0, 0);
+        addRow.addView(takePhoto, cameraParams);
+        content.addView(addRow, marginTop(2));
+
+        reelMusicButton = memoryActionButton("♫  Add music", view -> launchReelMusicPicker());
+        reelMusicButton.setOnLongClickListener(view -> {
+            if (reelMusicFile != null) {
+                reelMusicFile.delete();
+                reelMusicFile = null;
+                reelMusicName = null;
+                updateReelMusicLabel();
+            }
+            return true;
+        });
+        content.addView(reelMusicButton, new LinearLayout.LayoutParams(-1, dp(42)));
+
+        content.addView(label("TRANSITION", 9, "#8D625C", true), marginTop(10));
+        reelTransitionPicker = styledSpinner(
+                new String[]{"Cut", "Fade through black"}, "#FBF1ED");
+        content.addView(reelTransitionPicker, marginTop(4));
+
+        content.addView(label("SAVE TO ALBUM", 9, "#8D625C", true), marginTop(10));
+        reelAlbumPicker = buildPostAlbumPicker(-1);
+        content.addView(reelAlbumPicker, marginTop(4));
+        scroll.addView(content);
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        reelPublishButton = memoryActionButton("CREATE REEL", view -> exportReel());
+        reelPublishButton.setTextColor(Color.WHITE);
+        reelPublishButton.setBackground(background("#354A3C", 14));
+        root.addView(reelPublishButton, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        dialog.setContentView(root);
+        dialog.setOnDismissListener(ignored -> {
+            stopReelPreview();
+            cleanupReelFiles();
+            reelTimeline = null;
+            reelPreviewImage = null;
+            reelPreviewCounter = null;
+            reelPreviewPlayButton = null;
+            reelDurationLabel = null;
+            reelDurationSeekBar = null;
+            reelOverlayText = null;
+            reelAlbumPicker = null;
+            reelTransitionPicker = null;
+            reelMusicButton = null;
+            reelPublishButton = null;
+            reelDialog = null;
+        });
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(-1, -1);
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            dialog.getWindow().setStatusBarColor(color(COLOR_BLUSH));
+            dialog.getWindow().setNavigationBarColor(color(COLOR_BLUSH));
+        }
+        refreshReelTimeline();
+    }
+
+    private void refreshReelTimeline() {
+        if (reelTimeline == null || reelPreviewImage == null || reelSlides.isEmpty()) {
+            return;
+        }
+        currentReelIndex = Math.max(0, Math.min(currentReelIndex, reelSlides.size() - 1));
+        reelTimeline.removeAllViews();
+        for (int i = 0; i < reelSlides.size(); i++) {
+            final int index = i;
+            ReelSlide slide = reelSlides.get(i);
+            FrameLayout tile = new FrameLayout(this);
+            tile.setTag(Integer.valueOf(i));
+            tile.setBackground(background(i == currentReelIndex ? "#354A3C" : "#FBF8F3", 10));
+            tile.setPadding(dp(2), dp(2), dp(2), dp(2));
+            ImageView thumbnail = new ImageView(this);
+            thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            thumbnail.setImageBitmap(readPreview(slide.file, "image"));
+            FrameLayout.LayoutParams thumbnailParams = new FrameLayout.LayoutParams(-1, -1);
+            thumbnailParams.setMargins(dp(2), dp(2), dp(2), dp(2));
+            tile.addView(thumbnail, thumbnailParams);
+            TextView order = label(Integer.toString(i + 1), 9, "#FFFFFF", true);
+            order.setGravity(Gravity.CENTER);
+            order.setBackground(background("#B3354A3C", 8));
+            FrameLayout.LayoutParams orderParams = new FrameLayout.LayoutParams(dp(22), dp(22),
+                    Gravity.BOTTOM | Gravity.START);
+            orderParams.setMargins(dp(4), 0, 0, dp(4));
+            tile.addView(order, orderParams);
+            TextView remove = label("×", 16, "#FFFFFF", true);
+            remove.setGravity(Gravity.CENTER);
+            remove.setBackground(background("#B320251F", 50));
+            remove.setContentDescription("Remove photo " + (i + 1));
+            FrameLayout.LayoutParams removeParams = new FrameLayout.LayoutParams(dp(24), dp(24),
+                    Gravity.TOP | Gravity.END);
+            removeParams.setMargins(0, dp(3), dp(3), 0);
+            tile.addView(remove, removeParams);
+            remove.setOnClickListener(view -> removeReelSlide(index));
+            tile.setOnClickListener(view -> {
+                currentReelIndex = index;
+                updateReelPreview();
+                refreshReelTimeline();
+            });
+            tile.setOnLongClickListener(view -> {
+                ClipData dragData = ClipData.newPlainText("Reel slide", Integer.toString(index));
+                View.DragShadowBuilder shadow = new View.DragShadowBuilder(tile);
+                return tile.startDragAndDrop(dragData, shadow, Integer.valueOf(index), 0);
+            });
+            tile.setOnDragListener((target, event) -> handleReelTimelineDrag(target, event));
+            LinearLayout.LayoutParams tileParams = new LinearLayout.LayoutParams(dp(70), dp(88));
+            tileParams.setMargins(0, 0, dp(8), 0);
+            reelTimeline.addView(tile, tileParams);
+        }
+        updateReelPreview();
+    }
+
+    private boolean handleReelTimelineDrag(View target, DragEvent event) {
+        switch (event.getAction()) {
+            case DragEvent.ACTION_DRAG_STARTED:
+            case DragEvent.ACTION_DRAG_ENTERED:
+            case DragEvent.ACTION_DRAG_LOCATION:
+            case DragEvent.ACTION_DRAG_EXITED:
+                return true;
+            case DragEvent.ACTION_DROP:
+                if (!(event.getLocalState() instanceof Integer)
+                        || !(target.getTag() instanceof Integer)) {
+                    return false;
+                }
+                int from = (Integer) event.getLocalState();
+                int to = (Integer) target.getTag();
+                if (from >= 0 && from < reelSlides.size() && to >= 0 && to < reelSlides.size()) {
+                    ReelSlide moved = reelSlides.remove(from);
+                    reelSlides.add(to, moved);
+                    currentReelIndex = to;
+                    refreshReelTimeline();
+                }
+                return true;
+            case DragEvent.ACTION_DRAG_ENDED:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void removeReelSlide(int index) {
+        if (index < 0 || index >= reelSlides.size()) {
+            return;
+        }
+        reelSlides.remove(index).file.delete();
+        if (reelSlides.isEmpty()) {
+            if (reelDialog != null) {
+                reelDialog.dismiss();
+            }
+            return;
+        }
+        currentReelIndex = Math.min(currentReelIndex, reelSlides.size() - 1);
+        refreshReelTimeline();
+    }
+
+    private void updateReelPreview() {
+        if (reelSlides.isEmpty() || reelPreviewImage == null) {
+            return;
+        }
+        ReelSlide slide = reelSlides.get(currentReelIndex);
+        reelPreviewImage.setImageBitmap(readPreview(slide.file, "image"));
+        if (reelPreviewCounter != null) {
+            reelPreviewCounter.setText((currentReelIndex + 1) + " / " + reelSlides.size());
+        }
+        if (reelDurationSeekBar != null) {
+            reelDurationSeekBar.setProgress(slide.durationSeconds - 1);
+        }
+        if (reelDurationLabel != null) {
+            reelDurationLabel.setText(slide.durationSeconds + " sec");
+        }
+    }
+
+    private void moveReelPreview(int offset, boolean animate) {
+        if (reelSlides.isEmpty() || reelPreviewImage == null) {
+            return;
+        }
+        int nextIndex = (currentReelIndex + offset + reelSlides.size()) % reelSlides.size();
+        ImageView image = reelPreviewImage;
+        if (!animate) {
+            currentReelIndex = nextIndex;
+            updateReelPreview();
+            return;
+        }
+        if (reelTransitionPicker != null
+                && reelTransitionPicker.getSelectedItemPosition() == 1) {
+            image.animate().cancel();
+            image.animate().alpha(.05f).setDuration(120).withEndAction(() -> {
+                currentReelIndex = nextIndex;
+                updateReelPreview();
+                image.animate().alpha(1f).setDuration(180).start();
+            }).start();
+            return;
+        }
+        float distance = dp(28) * (offset < 0 ? 1 : -1);
+        image.animate().cancel();
+        image.animate().translationX(distance).alpha(.55f).setDuration(100).withEndAction(() -> {
+            currentReelIndex = nextIndex;
+            updateReelPreview();
+            image.setTranslationX(-distance);
+            image.animate().translationX(0).alpha(1f).setDuration(180).start();
+        }).start();
+    }
+
+    private void toggleReelPreview() {
+        if (isReelPreviewPlaying) {
+            stopReelPreview();
+            return;
+        }
+        isReelPreviewPlaying = true;
+        if (reelPreviewPlayButton != null) {
+            reelPreviewPlayButton.setText("PAUSE");
+        }
+        startReelPreviewMusic();
+        scheduleReelPreviewAdvance();
+    }
+
+    private void scheduleReelPreviewAdvance() {
+        if (!isReelPreviewPlaying || reelSlides.isEmpty()) {
+            return;
+        }
+        if (reelPreviewRunnable != null) {
+            uiHandler.removeCallbacks(reelPreviewRunnable);
+        }
+        int duration = reelSlides.get(currentReelIndex).durationSeconds;
+        reelPreviewRunnable = () -> {
+            if (isReelPreviewPlaying) {
+                moveReelPreview(1, true);
+                scheduleReelPreviewAdvance();
+            }
+        };
+        uiHandler.postDelayed(reelPreviewRunnable, duration * 1000L);
+    }
+
+    private void stopReelPreview() {
+        isReelPreviewPlaying = false;
+        if (reelPreviewPlayButton != null) {
+            reelPreviewPlayButton.setText("PLAY");
+        }
+        if (reelPreviewRunnable != null) {
+            uiHandler.removeCallbacks(reelPreviewRunnable);
+            reelPreviewRunnable = null;
+        }
+        stopReelPreviewMusic();
+    }
+
+    private void startReelPreviewMusic() {
+        if (!isReelPreviewPlaying || reelMusicFile == null || !reelMusicFile.isFile()) {
+            return;
+        }
+        stopReelPreviewMusic();
+        MediaPlayer player = new MediaPlayer();
+        reelPreviewMusicPlayer = player;
+        player.setLooping(true);
+        player.setOnPreparedListener(prepared -> {
+            if (isReelPreviewPlaying && reelPreviewMusicPlayer == prepared) {
+                prepared.start();
+            }
+        });
+        player.setOnErrorListener((failed, what, extra) -> {
+            if (reelPreviewMusicPlayer == failed) {
+                stopReelPreviewMusic();
+            }
+            return true;
+        });
+        try {
+            player.setDataSource(reelMusicFile.getAbsolutePath());
+            player.prepareAsync();
+        } catch (Exception exception) {
+            stopReelPreviewMusic();
+            showError("Could not preview this music file.");
+        }
+    }
+
+    private void stopReelPreviewMusic() {
+        if (reelPreviewMusicPlayer == null) {
+            return;
+        }
+        try {
+            reelPreviewMusicPlayer.stop();
+        } catch (IllegalStateException ignored) {
+            // The player can still be preparing when the preview is stopped.
+        }
+        reelPreviewMusicPlayer.release();
+        reelPreviewMusicPlayer = null;
+    }
+
+    private void launchReelMusicPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("audio/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, REQUEST_REEL_MUSIC);
+        } catch (Exception exception) {
+            showError("Could not open your music library.");
+        }
+    }
+
+    private void updateReelMusicLabel() {
+        if (reelMusicButton == null) {
+            return;
+        }
+        reelMusicButton.setText(reelMusicName == null
+                ? "♫  Add music" : "♫  " + reelMusicName + "   ·   Hold to remove");
+    }
+
+    private void exportReel() {
+        if (reelSlides.size() < 2) {
+            showError("Add at least two photos to create a Reel.");
+            return;
+        }
+        File directory = new File(getFilesDir(), "media");
+        File output = new File(directory, "reel_" + System.currentTimeMillis() + ".mp4");
+        List<File> images = new ArrayList<>();
+        List<Integer> durations = new ArrayList<>();
+        for (ReelSlide slide : reelSlides) {
+            images.add(slide.file);
+            durations.add(slide.durationSeconds);
+        }
+        File music = reelMusicFile;
+        String text = reelOverlayText == null ? "" : reelOverlayText.getText().toString().trim();
+        long albumId = reelAlbumPicker == null ? -1 : selectedAlbumId(reelAlbumPicker);
+        boolean fade = reelTransitionPicker != null
+                && reelTransitionPicker.getSelectedItemPosition() == 1;
+        if (reelPublishButton != null) {
+            reelPublishButton.setEnabled(false);
+            reelPublishButton.setText("CREATING REEL...");
+        }
+        ReelComposer.export(this, images, durations, music, text, fade, output,
+                new ReelComposer.Listener() {
+                    @Override
+                    public void onCompleted() {
+                        try {
+                            store.addPost(output.getName(), "video", text, albumId);
+                            Toast.makeText(MainActivity.this, "Reel saved on your device.",
+                                    Toast.LENGTH_SHORT).show();
+                            if (reelDialog != null) {
+                                reelDialog.dismiss();
+                            }
+                            renderHome();
+                        } catch (Exception exception) {
+                            output.delete();
+                            showError("Reel was created but could not be saved to your journal.");
+                            if (reelPublishButton != null) {
+                                reelPublishButton.setEnabled(true);
+                                reelPublishButton.setText("CREATE REEL");
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onError(Exception exception) {
+                        output.delete();
+                        if (reelPublishButton != null) {
+                            reelPublishButton.setEnabled(true);
+                            reelPublishButton.setText("CREATE REEL");
+                        }
+                        showError("Could not create this Reel on this device. Try fewer or smaller photos.");
+                    }
+                });
+    }
+
+    private void cleanupReelFiles() {
+        stopReelPreview();
+        for (ReelSlide slide : reelSlides) {
+            slide.file.delete();
+        }
+        reelSlides.clear();
+        if (reelMusicFile != null) {
+            reelMusicFile.delete();
+            reelMusicFile = null;
+        }
+        reelMusicName = null;
     }
 
     private void importIntoPrivateStorage(Uri source, String mediaType, Uri capturedUri) {
@@ -2276,6 +3258,15 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.bottomMargin = dp(dp);
         return params;
+    }
+
+    private static final class ReelSlide {
+        final File file;
+        int durationSeconds = 2;
+
+        ReelSlide(File file) {
+            this.file = file;
+        }
     }
 
     private final class PhotoViewerState {

@@ -207,7 +207,7 @@ function App() {
               <h2>Make room for<br />what matters.</h2>
               <p>Install Keepsake on your Android phone and create your first private post.</p>
               <DownloadButton light />
-              <span className="download-panel__fineprint">Android 8.0 or later · APK download · Version 1.0.3</span>
+              <span className="download-panel__fineprint">Android 8.0 or later · APK download · Version 1.0.4</span>
             </div>
             <div className="download-panel__monogram" aria-hidden="true">K</div>
           </div>
