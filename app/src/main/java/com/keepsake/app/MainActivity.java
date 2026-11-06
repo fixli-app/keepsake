@@ -795,17 +795,6 @@ public final class MainActivity extends Activity {
         return emoji == null || emoji.isEmpty() ? albumMonogram(name) : emoji;
     }
 
-    private String[] albumEmojis() {
-        int[] codePoints = {0x1F33F, 0x1F338, 0x1F33B, 0x1F343, 0x1F340, 0x1F33A,
-                0x1F30A, 0x1F31E, 0x1F319, 0x2728, 0x1F48C, 0x1F4D6,
-                0x1F4F7, 0x1F381, 0x1F3A8, 0x1F6B2};
-        String[] emojis = new String[codePoints.length];
-        for (int i = 0; i < codePoints.length; i++) {
-            emojis[i] = new String(Character.toChars(codePoints[i]));
-        }
-        return emojis;
-    }
-
     private void showEditAlbumDialog(PostStore.Album album) {
         showAlbumDialog(album.id, -1, this::refreshCurrentScreen);
     }
@@ -813,7 +802,7 @@ public final class MainActivity extends Activity {
     private void showAlbumDialog(long albumId, long postId, Runnable onSaved) {
         boolean editing = albumId >= 0;
         String initialName = editing ? findAlbumName(albumId) : "";
-        String[] selectedEmoji = {editing ? store.getAlbumEmoji(albumId) : ""};
+        String initialEmoji = editing ? store.getAlbumEmoji(albumId) : "";
 
         EditText name = new EditText(this);
         name.setSingleLine(true);
@@ -825,10 +814,20 @@ public final class MainActivity extends Activity {
         name.setBackground(background("#FBF8F3", 14));
         name.setText(initialName);
 
-        TextView emoji = label(albumMark(initialName, selectedEmoji[0]), 25, "#52634C", true);
+        EditText emoji = new EditText(this);
+        emoji.setSingleLine(true);
+        emoji.setMaxLines(1);
+        emoji.setTextSize(25);
         emoji.setGravity(Gravity.CENTER);
+        emoji.setTextColor(color("#52634C"));
+        emoji.setHintTextColor(color("#8D625C"));
+        emoji.setHint(albumMonogram(initialName));
+        emoji.setText(initialEmoji);
         emoji.setBackground(background("#EFF2E9", 50));
-        emoji.setContentDescription("Choose album emoji");
+        emoji.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        emoji.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        emoji.setContentDescription("Album emoji. Enter an emoji using your keyboard.");
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -837,35 +836,6 @@ public final class MainActivity extends Activity {
         content.addView(name, marginTop(5));
         content.addView(label("RING EMOJI", 9, "#8D625C", true), marginTop(12));
         content.addView(emoji, new LinearLayout.LayoutParams(dp(57), dp(57)));
-        emoji.setOnClickListener(view -> {
-            String[] options = albumEmojis();
-            new AlertDialog.Builder(this)
-                    .setTitle("Choose an emoji")
-                    .setItems(options, (dialog, selected) -> {
-                        selectedEmoji[0] = options[selected];
-                        emoji.setText(selectedEmoji[0]);
-                    })
-                    .setNeutralButton("Use initial", (dialog, which) -> {
-                        selectedEmoji[0] = "";
-                        emoji.setText(albumMark(name.getText().toString(), ""));
-                    })
-                    .setNegativeButton("Cancel", null)
-                    .show();
-        });
-        name.addTextChangedListener(new TextWatcher() {
-            @Override
-            public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
-
-            @Override
-            public void onTextChanged(CharSequence text, int start, int before, int count) {
-                if (selectedEmoji[0].isEmpty()) {
-                    emoji.setText(albumMark(text.toString(), ""));
-                }
-            }
-
-            @Override
-            public void afterTextChanged(Editable text) {}
-        });
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(editing ? "Edit album" : "Create an album")
@@ -881,11 +851,12 @@ public final class MainActivity extends Activity {
                         return;
                     }
                     try {
+                        String selectedEmoji = emoji.getText().toString().trim();
                         if (editing) {
-                            store.updateAlbum(albumId, albumName, selectedEmoji[0]);
+                            store.updateAlbum(albumId, albumName, selectedEmoji);
                         } else {
                             long newAlbumId = store.addAlbum(albumName);
-                            store.updateAlbum(newAlbumId, albumName, selectedEmoji[0]);
+                            store.updateAlbum(newAlbumId, albumName, selectedEmoji);
                             if (postId >= 0) {
                                 store.setPostAlbum(postId, newAlbumId);
                             }
