@@ -1870,6 +1870,7 @@ public final class MainActivity extends Activity {
             bounds.inJustDecodeBounds = true;
             BitmapFactory.decodeFile(sourceFile.getAbsolutePath(), bounds);
             BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = 1;
             while (Math.max(bounds.outWidth / (options.inSampleSize * 2),
                     bounds.outHeight / (options.inSampleSize * 2)) >= 1920) {
                 options.inSampleSize *= 2;
